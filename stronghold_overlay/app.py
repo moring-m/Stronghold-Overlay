@@ -14,7 +14,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QSystemTrayIcon, QWidget
 
 from . import capture, config, theme
-from .detectors import SHOP_STEP, SHOP_W, SHOP_X0, SHOP_Y_TOP, update_state
+from .detectors import SHOP_STEP, SHOP_W, SHOP_X0, SHOP_Y_TOP
 from .gamedata import GameData
 from .hotkeys import Hotkeys
 from .inputwatch import InputWatcher
@@ -105,13 +105,9 @@ class Worker(QObject):
             tick += 1
             try:
                 frame = cap.grab(rect)
-                # 상점 단계: 카드 이름 칸만 빠르게. 주기 인식 때는 전체 화면으로 화면 전환 확인.
-                if self.state.screen is Screen.BATTLE and reason != "periodic":
-                    self.state.shop = ocr.read_shop(frame, self.gd)
-                    if not self.state.shop:   # 상점이 접혔거나 화면이 바뀜 → 바로 전체 판별
-                        update_state(self.state, ocr.read(frame), frame, self.gd)
-                else:
-                    update_state(self.state, ocr.read(frame), frame, self.gd)
+                t = time.perf_counter()
+                ocr.scan(frame, self.state, self.gd)   # 화면별 필요한 영역만 읽음
+                log.debug("인식 %s %.0fms %s", reason, (time.perf_counter() - t) * 1000, self.state.screen.value)
                 self.updated.emit(copy.deepcopy(self.state))
             except Exception:
                 log.exception("인식 중 오류")
@@ -408,7 +404,8 @@ def selftest() -> int:
         problems.append("tier/alliance icons missing")
     if not (config.ROOT / "assets" / "icon.png").exists():
         problems.append("icon missing")
-    Ocr().read(np.zeros((90, 160, 3), np.uint8))
+    from .models import GameState
+    Ocr().scan(np.zeros((720, 1280, 3), np.uint8), GameState(), gd)
     result = "selftest: " + ("OK" if not problems else "FAIL " + ", ".join(problems))
     from pathlib import Path
     Path("selftest.txt").write_text(result, "utf-8")   # 창 모드 exe에는 stdout이 없음

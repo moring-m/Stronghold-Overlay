@@ -15,6 +15,12 @@ SHOP_Y_TOP = 0.74
 SHOP_NAME_Y = 0.92           # 이 아래 텍스트 = 오퍼레이터 이름
 SHOP_SLOTS = 6
 
+# 화면별로 읽을 영역 (x0, y0, x1, y1) — 전체 화면을 읽지 않아 빠르다
+REGION_TITLE = (0.25, 0.0, 0.80, 0.09)        # "1/3 确认本局信息", "2/3 选择策略"
+REGION_BUTTONS = (0.76, 0.62, 1.0, 0.72)      # 전투: "冻结", "刷新"
+REGION_STRATEGY = (0.75, 0.40, 1.0, 0.62)     # 전략 상세: "初始生命值", 발기인 이름
+REGION_ALLIANCES = (0.04, 0.28, 0.68, 0.97)   # 본국 정보: 맹약 이름들
+
 STRATEGY_PANEL_X = 0.75
 INFO_LEFT_PANEL_MAX_X = 0.68
 ICON_OFFSET_Y = 0.075
@@ -22,9 +28,10 @@ ICON_RADIUS = 0.025
 
 def classify_screen(boxes: list[TextBox]) -> Screen:
     texts = " ".join(b.text for b in boxes)
-    if "确认本局信息" in texts or ("核心盟约" in texts and "附加盟约" in texts):
+    # 글자 하나 정도 잘못 읽어도 되도록 일부만 맞춰 본다 (예: 选择策略 → 选择策路)
+    if any(k in texts for k in ("确认本局", "本局信息")) or ("核心盟约" in texts and "附加盟约" in texts):
         return Screen.MATCH_INFO
-    if "选择策略" in texts:
+    if any(k in texts for k in ("选择策", "择策略", "2/3")):
         return Screen.STRATEGY_SELECT
     if "刷新" in texts and any(k in texts for k in ("冻结", "升级", "剩余可放置", "准备就绪")):
         return Screen.BATTLE

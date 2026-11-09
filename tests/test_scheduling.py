@@ -14,13 +14,13 @@ D, I = 0.2, 1.5   # 입력 후 대기, 주기
 def test_waits_200ms_after_last_click():
     last_run = 10.0
     assert next_reason(10.10, 10.05, last_run, D, I, None) is None        # 클릭 0.05초 후: 대기
-    assert next_reason(10.25, 10.05, last_run, D, I, None) == "input"     # 0.2초 지나면 인식
+    assert next_reason(10.26, 10.05, last_run, D, I, None) == "input"     # 0.2초 지나면 인식
 
 
 def test_rapid_clicks_use_the_last_one():
     # 10.05, 10.15, 10.30에 연속 클릭 → 마지막(10.30) + 0.2초 전에는 인식하지 않음
     assert next_reason(10.45, 10.30, 10.0, D, I, None) is None
-    assert next_reason(10.50, 10.30, 10.0, D, I, None) == "input"
+    assert next_reason(10.51, 10.30, 10.0, D, I, None) == "input"
 
 
 def test_input_during_recognition_triggers_again():

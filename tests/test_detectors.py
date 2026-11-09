@@ -16,6 +16,7 @@ def tb(text, x, y, w=40, h=18):
 def test_classify():
     assert classify_screen([tb("1/3", 0, 0), tb("确认本局信息", 470, 25)]) is Screen.MATCH_INFO
     assert classify_screen([tb("选择策略", 610, 30)]) is Screen.STRATEGY_SELECT
+    assert classify_screen([tb("2/3 选择策路请", 610, 30)]) is Screen.STRATEGY_SELECT   # 실제 오인식 사례
     assert classify_screen([tb("冻结", 1120, 505), tb("刷新", 1270, 505)]) is Screen.BATTLE
 
 
@@ -54,3 +55,35 @@ def test_strategy_name():
     leader = detect_strategy(boxes)
     assert leader == "阿米娅"
     assert GD.strategy(leader)["name"] == "众志合一"
+
+
+def test_scan_reads_only_regions():
+    """scan()은 화면별 영역만 읽는다: 어떤 영역을 읽었는지 기록해서 확인."""
+    import numpy as np
+    from stronghold_overlay.detectors import REGION_ALLIANCES, REGION_BUTTONS, REGION_STRATEGY, REGION_TITLE
+    from stronghold_overlay.models import GameState
+    from stronghold_overlay.ocr import Ocr
+
+    class FakeOcr(Ocr):
+        def __init__(self, title, buttons=(), strategy=(), shop=()):
+            self.calls, self.data = [], {REGION_TITLE: title, REGION_BUTTONS: buttons,
+                                         REGION_STRATEGY: strategy, REGION_ALLIANCES: []}
+            self.shop = list(shop)
+
+        def read(self, frame, min_score=0.5, region=(0, 0, 1, 1)):
+            self.calls.append(region)
+            return list(self.data.get(region, []))
+
+        def read_shop(self, frame, gd):
+            self.calls.append("shop")
+            return self.shop
+
+    frame = np.zeros((10, 10, 3), np.uint8)
+    o = FakeOcr([tb("2/3 选择策略", 610, 30)], strategy=[tb("初始生命值", 1140, 343, 100), tb("阿米娅", 1080, 390, 60)])
+    st = o.scan(frame, GameState(), GD)
+    assert st.strategy == "阿米娅" and o.calls == [REGION_TITLE, REGION_STRATEGY]
+
+    from stronghold_overlay.models import Screen, ShopCard
+    o = FakeOcr([], shop=[ShopCard(1, "复奏")])
+    st = o.scan(frame, GameState(screen=Screen.BATTLE), GD)
+    assert [c.operator for c in st.shop] == ["复奏"] and o.calls == ["shop"]     # 전투 중엔 상점 칸만
