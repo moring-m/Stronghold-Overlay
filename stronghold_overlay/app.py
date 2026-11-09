@@ -17,6 +17,7 @@ from . import capture, config, theme
 from .detectors import SHOP_STEP, SHOP_W, SHOP_X0, SHOP_Y_TOP, update_state
 from .gamedata import GameData
 from .hotkeys import Hotkeys
+from .inputwatch import InputWatcher
 from .i18n import LANGUAGES, set_language, tr
 from .models import GameState, Screen
 from .settings_ui import SettingsPanel
@@ -52,15 +53,31 @@ def to_logical(rect: tuple[int, int, int, int]) -> QRect:
     return QRect(x, y, w, h)
 
 
+CONFIRM_AFTER = 0.5   # 입력으로 인식한 뒤, 애니메이션이 끝난 화면을 한 번 더 확인
+
+
+def next_reason(now: float, last_input: float, last_run: float, delay: float, interval: float,
+                confirm_at: float | None) -> str | None:
+    """지금 인식할지와 그 이유. 'input' | 'confirm' | 'periodic' | None"""
+    if last_input > last_run and now - last_input >= delay:
+        return "input"          # 마지막 클릭/키 입력 후 delay초 (연속 입력이면 마지막 기준)
+    if confirm_at is not None and now >= confirm_at:
+        return "confirm"
+    if now - last_run >= interval:
+        return "periodic"       # 입력 없이 바뀌는 화면 대비
+    return None
+
+
 class Worker(QObject):
-    """백그라운드: 캡처 → OCR → 상태 갱신. 상태 사본을 GUI로 보낸다."""
+    """백그라운드: 입력 직후(기본 0.2초) 또는 주기적으로 캡처 → OCR → 상태 갱신."""
     updated = Signal(object)  # GameState
 
-    def __init__(self, settings: config.Settings, gd: GameData) -> None:
+    def __init__(self, settings: config.Settings, gd: GameData, inputs) -> None:
         super().__init__()
-        self.settings, self.gd = settings, gd
+        self.settings, self.gd, self.inputs = settings, gd, inputs
         self.state = GameState()
         self.rect: tuple[int, int, int, int] | None = None   # GUI 쪽 추적 타이머가 갱신
+        self.focused = False                                  # 게임 창이 앞에 있을 때만 입력을 셈
         self.paused = False
         self._stop = False
 
@@ -71,24 +88,33 @@ class Worker(QObject):
         except Exception:
             log.exception("OCR 초기화 실패")
             return
-        tick = 0
+        last_run, confirm_at, tick = 0.0, None, 0
         while not self._stop:
+            time.sleep(0.02)
             rect = self.rect
-            if rect and not self.paused:
-                tick += 1
-                try:
-                    frame = cap.grab(rect)
-                    # 상점 단계: 카드 이름 칸만 빠르게. 5번에 1번은 전체 화면으로 화면 전환 확인.
-                    if self.state.screen is Screen.BATTLE and tick % 5:
-                        self.state.shop = ocr.read_shop(frame, self.gd)
-                        if not self.state.shop:   # 상점이 접혔거나 화면이 바뀜 → 바로 전체 판별
-                            update_state(self.state, ocr.read(frame), frame, self.gd)
-                    else:
+            if not rect or self.paused:
+                continue
+            now = time.monotonic()
+            last_input = self.inputs.last_input if self.focused else 0.0
+            reason = next_reason(now, last_input, last_run, self.settings.input_delay_ms / 1000,
+                                 self.settings.interval_ms / 1000, confirm_at)
+            if not reason:
+                continue
+            last_run = now
+            confirm_at = now + CONFIRM_AFTER if reason == "input" else None
+            tick += 1
+            try:
+                frame = cap.grab(rect)
+                # 상점 단계: 카드 이름 칸만 빠르게. 주기 인식 때는 전체 화면으로 화면 전환 확인.
+                if self.state.screen is Screen.BATTLE and reason != "periodic":
+                    self.state.shop = ocr.read_shop(frame, self.gd)
+                    if not self.state.shop:   # 상점이 접혔거나 화면이 바뀜 → 바로 전체 판별
                         update_state(self.state, ocr.read(frame), frame, self.gd)
-                    self.updated.emit(copy.deepcopy(self.state))
-                except Exception:
-                    log.exception("인식 중 오류")
-            time.sleep(self.settings.interval_ms / 1000)
+                else:
+                    update_state(self.state, ocr.read(frame), frame, self.gd)
+                self.updated.emit(copy.deepcopy(self.state))
+            except Exception:
+                log.exception("인식 중 오류")
 
     def stop(self) -> None:
         self._stop = True
@@ -199,7 +225,8 @@ class App(QObject):
         self.hotkeys = Hotkeys({"settings": self.settings.hotkey_settings, "toggle": self.settings.hotkey_toggle})
         self.hotkeys.triggered.connect(self._hotkey)
 
-        self.worker = Worker(self.settings, self.gd)
+        self.inputs = InputWatcher()
+        self.worker = Worker(self.settings, self.gd, self.inputs)
         self.worker.updated.connect(self.on_state)
         threading.Thread(target=self.worker.run, daemon=True).start()
 
@@ -271,7 +298,9 @@ class App(QObject):
         game = to_logical(rect) if rect else None
         self._follow_panel(self.game, game)
         self.game = game
-        visible = bool(self.game) and self.enabled and capture.is_foreground(self.hwnd)
+        focused = bool(self.hwnd) and capture.is_foreground(self.hwnd)
+        self.worker.focused = focused
+        visible = bool(self.game) and self.enabled and focused
         if visible:
             if self.overlay.geometry() != self.game:
                 self.overlay.setGeometry(self.game)
@@ -357,6 +386,7 @@ class App(QObject):
     def _shutdown(self) -> None:
         self.worker.stop()
         self.hotkeys.stop()
+        self.inputs.stop()
         self.tray.hide()
 
 

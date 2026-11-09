@@ -458,8 +458,15 @@ class SettingsPanel(QWidget):
         f.addRow(tr("hotkeys"), QLabel(tr("hotkeys_desc", s=self.settings.hotkey_settings,
                                           o=self.settings.hotkey_toggle), objectName="Muted"))
 
+        self.delay = QComboBox()
+        for ms in (100, 200, 300, 500):
+            self.delay.addItem(tr("delay_n", s=ms / 1000) + (tr("recommended") if ms == 200 else ""), ms)
+        self.delay.setCurrentIndex(max(0, self.delay.findData(self.settings.input_delay_ms)))
+        self.delay.currentIndexChanged.connect(lambda i: self._set("input_delay_ms", self.delay.itemData(i)))
+        f.addRow(tr("input_delay"), self.delay)
+
         self.interval = QComboBox()
-        for ms, key in ((400, "speed_fast"), (700, "speed_normal"), (1200, "speed_slow")):
+        for ms, key in ((700, "speed_fast"), (1500, "speed_normal"), (3000, "speed_slow")):
             self.interval.addItem(tr(key, ms=ms), ms)
         cur = self.interval.findData(self.settings.interval_ms)
         if cur < 0:

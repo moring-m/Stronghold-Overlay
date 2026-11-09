@@ -46,7 +46,8 @@ def new_id() -> str:
 class Settings:
     language: str = "ko"
     window_title: str = "明日方舟"
-    interval_ms: int = 700
+    interval_ms: int = 1500             # 입력이 없을 때의 주기 인식 간격
+    input_delay_ms: int = 200           # 마지막 클릭/키 입력 후 인식까지 대기
     base_operators: list[str] = field(default_factory=list)
     base_equipment: list[str] = field(default_factory=list)
     base_alliances: list[str] = field(default_factory=list)

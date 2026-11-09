@@ -1,7 +1,8 @@
 {
   "language": "ko",
   "window_title": "明日方舟",
-  "interval_ms": 700,
+  "interval_ms": 1500,
+  "input_delay_ms": 200,
   "base_operators": [],
   "base_equipment": [],
   "base_alliances": [],
