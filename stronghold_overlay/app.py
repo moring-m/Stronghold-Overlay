@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import sys
 import threading
 import time
@@ -14,9 +13,9 @@ from . import config
 from .capture import Capturer, find_window
 from .detectors import SHOP_STEP, SHOP_W, SHOP_X0, SHOP_Y_TOP, update_state
 from .gamedata import GameData
+from .i18n import set_language, tr
 from .models import GameState, Screen
-
-MANUAL_AUTO = "(자동 감지)"
+from .settings_ui import SettingsDialog
 YELLOW = QColor(255, 210, 0)
 
 
@@ -84,35 +83,35 @@ class Overlay(QWidget):
         s, st = self.state, self.strategy
         lines = []
         if st:
-            lines.append(f"전략: {st['leader']} 【{st['name']}】 HP {st['hp']}")
+            lines.append(tr("ov_strategy", l=st["leader"], n=st["name"], hp=st["hp"]))
             lines.append("  " + st["effect"].replace("被动效果：", "")[:60])
         elif s.strategy:
-            lines.append(f"전략: {s.strategy} (PRTS 데이터에 없음)")
+            lines.append(tr("ov_strategy_unknown", l=s.strategy))
         if note:
-            lines.append(f"  메모: {note}")
+            lines.append(tr("ov_note", t=note))
 
         m = s.match
         if m.banned_alliances:
-            lines.append("밴(이번 판 미등장): " + ", ".join(m.banned_alliances))
+            lines.append(tr("ov_banned", x=", ".join(m.banned_alliances)))
             hit = sorted(alliances & set(m.banned_alliances))
             if hit:
-                lines.append("⚠ 선호 맹약 밴됨: " + ", ".join(hit))
+                lines.append(tr("ov_banned_pref", x=", ".join(hit)))
             banned_ops = sorted(o for o in ops
                                 if set(self.gd.operators.get(o, {}).get("alliances", [])) & set(m.banned_alliances))
             if banned_ops:
-                lines.append("⚠ 밴 맹약 소속 선호 오퍼레이터: " + ", ".join(banned_ops))
+                lines.append(tr("ov_banned_ops", x=", ".join(banned_ops)))
         if m.boss:
             bosses = self.gd.boss_candidates(m.boss)
             if len(bosses) == 1:
-                lines.append(f"보스: {bosses[0]}  {config.lookup_note(self.settings.enemy_notes, bosses[0])}")
+                lines.append(tr("ov_boss", b=bosses[0], n=config.lookup_note(self.settings.enemy_notes, bosses[0])))
             else:
-                lines.append(f"보스: {m.boss}? (후보: {'、'.join(bosses)})")
+                lines.append(tr("ov_boss_multi", b=m.boss, c="、".join(bosses)))
         for e in m.special_enemies:
             g = self.gd.special_group(e)
             if g:
-                lines.append(f"특훈[{g[0]}]: " + "、".join(g[1][:6]) + (" 외" if len(g[1]) > 6 else ""))
+                lines.append(tr("ov_special", g=g[0], e="、".join(g[1][:6]) + (tr("ov_more") if len(g[1]) > 6 else "")))
             else:
-                lines.append(f"특훈: {e}")
+                lines.append(tr("ov_special", g="?", e=e))
         return lines
 
     def paintEvent(self, _):
@@ -141,40 +140,63 @@ class Overlay(QWidget):
 
 
 class Control(QWidget):
-    """작은 조작 창: 전략 수동 지정, 설정 파일 열기."""
+    """조작 창: 상태 표시, 전략 수동 지정, 설정 열기."""
 
     def __init__(self, overlay: Overlay, settings: config.Settings, gd: GameData) -> None:
         super().__init__(None, Qt.WindowStaysOnTopHint)
-        self.setWindowTitle("Stronghold Overlay")
-        self.overlay, self.settings = overlay, settings
+        self.overlay, self.settings, self.gd = overlay, settings, gd
+        self._state: GameState | None = None
         lay = QVBoxLayout(self)
-        lay.addWidget(QLabel("전략 (자동 감지 실패 시 수동 선택)"))
+        self.status = QLabel()
+        self.pick_label = QLabel()
         self.combo = QComboBox()
-        self.combo.addItem(MANUAL_AUTO)
-        for s in gd.raw["strategies"]:
-            self.combo.addItem(f"{s['leader']} 【{s['name']}】", s["leader"])
+        self.combo.setEditable(True)
+        self.combo.setInsertPolicy(QComboBox.NoInsert)
+        self.settings_btn = QPushButton()
+        self.data_label = QLabel()
+        self.data_label.setStyleSheet("color: gray;")
+        for wdg in (self.status, self.pick_label, self.combo, self.settings_btn, self.data_label):
+            lay.addWidget(wdg)
         self.combo.currentIndexChanged.connect(self._pick)
-        lay.addWidget(self.combo)
-        btn = QPushButton("설정 파일 열기")
-        btn.clicked.connect(self._open)
-        lay.addWidget(btn)
-        src = gd.raw.get("fetched", "없음")
-        lay.addWidget(QLabel(f"PRTS 데이터: {src}"))
+        self.settings_btn.clicked.connect(self._open_settings)
+        self.retranslate()
+
+    def retranslate(self) -> None:
+        self.setWindowTitle(tr("app_title"))
+        self.pick_label.setText(tr("strategy_pick"))
+        self.settings_btn.setText(tr("open_settings"))
+        self.data_label.setText(tr("data_date", d=self.gd.raw.get("fetched", "-")))
+        cur = self.combo.currentData()
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        self.combo.addItem(tr("auto_detect"), None)
+        for s in self.gd.raw["strategies"]:
+            self.combo.addItem(f"{s['leader']} 【{s['name']}】", s["leader"])
+        self.combo.setCurrentIndex(max(0, self.combo.findData(cur)))
+        self.combo.blockSignals(False)
+        self.on_update(self._state, None)
+
+    def on_update(self, state: GameState | None, _rect) -> None:
+        self._state = state
+        if state is None:
+            self.status.setText(tr("status_wait", t=self.settings.window_title))
+        else:
+            self.status.setText(tr("status_ok", s=tr("screen_" + state.screen.value)))
 
     def _pick(self, idx: int) -> None:
-        self.overlay.manual_strategy = self.combo.itemData(idx) if idx > 0 else None
+        self.overlay.manual_strategy = self.combo.itemData(idx)
         self.overlay.update()
 
-    def _open(self) -> None:
-        if not config.USER_FILE.exists():
-            config.save_user_settings(self.settings)
-        if sys.platform == "win32":
-            os.startfile(config.USER_FILE)  # 저장 후 프로그램 재시작 시 반영
+    def _open_settings(self) -> None:
+        if SettingsDialog(self.settings, self.gd, self).exec():
+            self.retranslate()
+            self.overlay.update()
 
 
 def main() -> None:
     app = QApplication(sys.argv)
     settings = config.load_settings()
+    set_language(settings.language)
     gd = GameData.load()
     overlay = Overlay(settings, gd)
     control = Control(overlay, settings, gd)
@@ -182,6 +204,7 @@ def main() -> None:
 
     worker = Worker(settings, gd)
     worker.updated.connect(overlay.on_update)
+    worker.updated.connect(control.on_update)
     threading.Thread(target=worker.run, daemon=True).start()
     app.aboutToQuit.connect(worker.stop)
     sys.exit(app.exec())

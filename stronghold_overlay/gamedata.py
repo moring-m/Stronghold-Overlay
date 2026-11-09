@@ -86,7 +86,7 @@ class GameData:
         return m or [text]
 
     @cached_property
-    def boss_portraits(self) -> dict[str, "np.ndarray"]:
+    def boss_portraits(self) -> dict[str, object]:
         """PRTS 보스 초상화 (BGRA). 한글/특수문자 경로 때문에 imdecode 사용."""
         import cv2
         import numpy as np

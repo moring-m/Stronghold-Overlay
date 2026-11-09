@@ -21,6 +21,7 @@ class Preset:
 
 @dataclass
 class Settings:
+    language: str = "ko"
     window_title: str = "明日方舟"
     interval_ms: int = 700
     base_operators: list[str] = field(default_factory=list)
@@ -59,6 +60,7 @@ def load_settings() -> Settings:
 
 def save_user_settings(s: Settings) -> None:
     data = {
+        "language": s.language,
         "window_title": s.window_title,
         "interval_ms": s.interval_ms,
         "base_operators": s.base_operators,
