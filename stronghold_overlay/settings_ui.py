@@ -1,14 +1,16 @@
 """설정 패널 — 게임 창 위에 반투명으로 뜨고, 바꾸는 즉시 저장·반영된다."""
 from __future__ import annotations
 
+import copy
+
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
-from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QHBoxLayout,
-                               QLabel, QLineEdit, QPushButton, QSlider, QStackedWidget, QVBoxLayout,
-                               QWidget)
+from PySide6.QtGui import QColor, QGuiApplication, QKeySequence, QPainter, QPen, QShortcut
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout,
+                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QMessageBox, QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import autostart, config, theme
-from .config import Preset
+from .config import Preset, new_id
 from .gamedata import GameData
 from .i18n import LANGUAGES, tr
 from .pickers import AlliancePicker, CardPicker
@@ -123,16 +125,50 @@ class SettingsPanel(QWidget):
 
     def _page_presets(self) -> QWidget:
         w, lay = self._page(tr("preset_hint"))
-        self.strat = QComboBox()
-        self.strat.setEditable(True)            # 입력해서 찾기
-        self.strat.setInsertPolicy(QComboBox.NoInsert)
-        self.strat.lineEdit().setPlaceholderText(tr("strategy_search"))
-        for s in self.gd.raw["strategies"]:
-            self.strat.addItem("", s["leader"])
-        lay.addWidget(self.strat)
-        self.strat_effect = QLabel(objectName="Hint")
-        self.strat_effect.setWordWrap(True)
-        lay.addWidget(self.strat_effect)
+        body = QHBoxLayout()
+        lay.addLayout(body, 1)
+
+        # 왼쪽: 프리셋 목록 + 관리 버튼
+        left = QVBoxLayout()
+        self.p_list = QListWidget(objectName="PresetList")
+        self.p_list.setFixedWidth(220)
+        left.addWidget(self.p_list, 1)
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        self.p_btns = {}
+        for i, (key, fn) in enumerate((("p_new", self._preset_new), ("p_save", self._preset_save),
+                                       ("p_dup", self._preset_dup), ("p_rename", self._preset_rename),
+                                       ("p_delete", self._preset_delete), ("p_export", self._preset_export),
+                                       ("p_import", self._preset_import))):
+            b = QPushButton(tr(key))
+            b.clicked.connect(fn)
+            grid.addWidget(b, i // 2, i % 2)
+            self.p_btns[key] = b
+        left.addLayout(grid)
+        body.addLayout(left)
+
+        # 오른쪽: 선택한 프리셋 편집
+        self.p_editor = QWidget()
+        ed = QVBoxLayout(self.p_editor)
+        ed.setContentsMargins(8, 0, 0, 0)
+        srow = QHBoxLayout()
+        srow.addWidget(QLabel(tr("p_strategies")))
+        self.p_strat_add = QComboBox()
+        self.p_strat_add.setEditable(True)
+        self.p_strat_add.setInsertPolicy(QComboBox.NoInsert)
+        self.p_strat_add.lineEdit().setPlaceholderText(tr("strategy_search"))
+        self.p_strat_add.addItem("", None)
+        for st in self.gd.raw["strategies"]:
+            t = self.gd.strategy_label(st)
+            self.p_strat_add.addItem(f"{t['leader']} 【{t['name']}】", st["leader"])
+        self.p_strat_add.activated.connect(self._preset_link)
+        srow.addWidget(self.p_strat_add, 1)
+        ed.addLayout(srow)
+        self.p_chips = QHBoxLayout()
+        self.p_chips.setSpacing(4)
+        chips_w = QWidget()
+        chips_w.setLayout(self.p_chips)
+        ed.addWidget(chips_w)
 
         tabs = QHBoxLayout()
         self.p_tab = QButtonGroup(self)
@@ -145,7 +181,7 @@ class SettingsPanel(QWidget):
         self.p_note = QLineEdit()
         self.p_note.setPlaceholderText(tr("note_placeholder"))
         tabs.addWidget(self.p_note, 2)
-        lay.addLayout(tabs)
+        ed.addLayout(tabs)
         self.p_stack = QStackedWidget()
         self.p_ops = CardPicker(self.gd, "operator")
         self.p_items = CardPicker(self.gd, "equipment")
@@ -154,15 +190,166 @@ class SettingsPanel(QWidget):
             self.p_stack.addWidget(wdg)
         self.p_tab.idClicked.connect(self.p_stack.setCurrentIndex)
         self.p_tab.button(0).setChecked(True)
-        lay.addWidget(self.p_stack, 1)
+        ed.addWidget(self.p_stack, 1)
+        body.addWidget(self.p_editor, 1)
+        self.p_empty = QLabel(tr("p_empty"), objectName="Muted", alignment=Qt.AlignCenter)
+        body.addWidget(self.p_empty, 1)
 
-        self._cur: str | None = None
-        self.strat.currentIndexChanged.connect(self._load_preset)
+        self._loading = False
+        self.p_list.currentRowChanged.connect(self._preset_load)
         for sig in (self.p_ops.changed, self.p_items.changed, self.p_als.changed, self.p_note.textChanged):
-            sig.connect(self._store_preset)
-        self._label_strategies()
-        self._load_preset(0)
+            sig.connect(self._preset_store)
+        self._preset_refresh()
         return w
+
+    # ---------- 프리셋 ----------
+    def _cur_preset(self) -> Preset | None:
+        it = self.p_list.currentItem()
+        return self.settings.presets.get(it.data(Qt.UserRole)) if it else None
+
+    def _preset_refresh(self, select: str | None = None) -> None:
+        cur = select or (self.p_list.currentItem().data(Qt.UserRole) if self.p_list.currentItem() else None)
+        self.p_list.blockSignals(True)
+        self.p_list.clear()
+        for p in self.settings.presets.values():
+            n = len(p.operators) + len(p.equipment)
+            it = QListWidgetItem(f"{p.name}\n{tr('p_summary', n=n, s=len(p.strategies))}")
+            it.setData(Qt.UserRole, p.id)
+            self.p_list.addItem(it)
+            if p.id == cur:
+                self.p_list.setCurrentItem(it)
+        if self.p_list.currentRow() < 0 and self.p_list.count():
+            self.p_list.setCurrentRow(0)
+        self.p_list.blockSignals(False)
+        self._preset_load()
+
+    def _preset_load(self, *_):
+        p = self._cur_preset()
+        self.p_editor.setVisible(p is not None)
+        self.p_empty.setVisible(p is None)
+        for k in ("p_dup", "p_rename", "p_delete", "p_export", "p_save"):
+            self.p_btns[k].setEnabled(p is not None)
+        if not p:
+            return
+        self._loading = True
+        self.p_ops.set_checked(p.operators)
+        self.p_items.set_checked(p.equipment)
+        self.p_als.set_checked(p.alliances)
+        self.p_note.setText(p.note)
+        self._preset_chips(p)
+        self._loading = False
+
+    def _preset_chips(self, p: Preset) -> None:
+        while self.p_chips.count():
+            item = self.p_chips.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        if not p.strategies:
+            self.p_chips.addWidget(QLabel(tr("p_no_strategy"), objectName="Muted"))
+        for leader in p.strategies:
+            st = self.gd.strategy(leader)
+            t = self.gd.strategy_label(st) if st else {"leader": leader, "name": ""}
+            b = QPushButton(f"{t['leader']} 【{t['name']}】  ✕", objectName="ChipButton")
+            b.setToolTip(tr("p_unlink"))
+            b.clicked.connect(lambda _=False, lv=leader: self._preset_unlink(lv))
+            self.p_chips.addWidget(b)
+        self.p_chips.addStretch(1)
+
+    def _preset_store(self, *_):
+        p = self._cur_preset()
+        if not p or self._loading:
+            return
+        p.operators, p.equipment = self.p_ops.checked(), self.p_items.checked()
+        p.alliances, p.note = self.p_als.checked(), self.p_note.text().strip()
+        it = self.p_list.currentItem()
+        it.setText(f"{p.name}\n{tr('p_summary', n=len(p.operators) + len(p.equipment), s=len(p.strategies))}")
+        self._changed()
+
+    def _preset_link(self, idx: int) -> None:
+        p, leader = self._cur_preset(), self.p_strat_add.itemData(idx)
+        self.p_strat_add.setCurrentIndex(0)
+        if p and leader and leader not in p.strategies:
+            p.strategies.append(leader)
+            self._preset_chips(p)
+            self._preset_refresh(p.id)
+            self._changed()
+
+    def _preset_unlink(self, leader: str) -> None:
+        p = self._cur_preset()
+        if p and leader in p.strategies:
+            p.strategies.remove(leader)
+            self._preset_refresh(p.id)
+            self._changed()
+
+    def _ask_name(self, title: str, default: str) -> str | None:
+        name, ok = QInputDialog.getText(self, title, tr("p_name"), text=default)
+        name = name.strip()[:40]
+        return name if ok and name else None
+
+    def _add_preset(self, p: Preset) -> None:
+        self.settings.presets[p.id] = p
+        self._preset_refresh(p.id)
+        self._changed()
+
+    def _preset_new(self) -> None:
+        name = self._ask_name(tr("p_new"), tr("p_default_name", n=len(self.settings.presets) + 1))
+        if name:
+            self._add_preset(Preset(id=new_id(), name=name))
+
+    def _preset_save(self) -> None:
+        self._save()   # 자동 저장되지만 명시적으로도 저장
+
+    def _preset_dup(self) -> None:
+        p = self._cur_preset()
+        if p:
+            q = copy.deepcopy(p)
+            q.id, q.name = new_id(), tr("p_copy_name", n=p.name)[:40]
+            self._add_preset(q)
+
+    def _preset_rename(self) -> None:
+        p = self._cur_preset()
+        name = p and self._ask_name(tr("p_rename"), p.name)
+        if name:
+            p.name = name
+            self._preset_refresh(p.id)
+            self._changed()
+
+    def _preset_delete(self) -> None:
+        p = self._cur_preset()
+        if p and QMessageBox.question(self, tr("p_delete"), tr("p_delete_confirm", n=p.name)) == QMessageBox.Yes:
+            del self.settings.presets[p.id]
+            if self.settings.active_preset == p.id:
+                self.settings.active_preset = None
+            self._preset_refresh()
+            self._changed()
+
+    def _preset_export(self) -> None:
+        p = self._cur_preset()
+        if not p:
+            return
+        code = config.export_code(p)
+        QGuiApplication.clipboard().setText(code)
+        box = QInputDialog(self)
+        box.setWindowTitle(tr("p_export"))
+        box.setLabelText(tr("p_export_done"))
+        box.setTextValue(code)
+        box.setOption(QInputDialog.NoButtons, False)
+        box.exec()
+
+    def _preset_import(self) -> None:
+        text, ok = QInputDialog.getText(self, tr("p_import"), tr("p_import_label"),
+                                        text=QGuiApplication.clipboard().text().strip()[:4000])
+        if not ok or not text.strip():
+            return
+        valid = {"operators": set(self.gd.operators) | self.gd.prototypes, "equipment": set(self.gd.equipment),
+                 "alliances": set(self.gd.alliances),
+                 "strategies": {st["leader"] for st in self.gd.raw["strategies"]}}
+        try:
+            p = config.import_code(text, valid)
+        except ValueError:
+            QMessageBox.warning(self, tr("p_import"), tr("p_import_bad"))
+            return
+        self._add_preset(p)
 
     def _page_general(self, current_manual: str | None) -> QWidget:
         w, lay = self._page("")
@@ -184,6 +371,14 @@ class SettingsPanel(QWidget):
         self.manual.setCurrentIndex(max(0, self.manual.findData(current_manual)))
         self.manual.currentIndexChanged.connect(lambda i: self.manual_strategy.emit(self.manual.itemData(i)))
         f.addRow(tr("strategy_pick"), self.manual)
+
+        self.active = QComboBox()
+        self.active.addItem(tr("p_auto"), None)
+        for p in self.settings.presets.values():
+            self.active.addItem(p.name, p.id)
+        self.active.setCurrentIndex(max(0, self.active.findData(self.settings.active_preset)))
+        self.active.currentIndexChanged.connect(lambda i: self._set("active_preset", self.active.itemData(i)))
+        f.addRow(tr("p_active"), self.active)
 
         self.opacity = QSlider(Qt.Horizontal, minimum=50, maximum=100, value=self.settings.panel_opacity)
         self.opacity.valueChanged.connect(self._opacity_changed)
@@ -220,50 +415,6 @@ class SettingsPanel(QWidget):
         lay.addLayout(f)
         lay.addStretch(1)
         return w
-
-    # ---------- 프리셋 ----------
-    def _preset_key(self, leader: str) -> str:
-        s = self.gd.strategy(leader)
-        for k in (leader, s and s["name"]):
-            if k and k in self.settings.presets:
-                return k
-        return leader
-
-    def _label_strategies(self) -> None:
-        """프리셋이 있는 전략 앞에 ● 표시."""
-        for i in range(self.strat.count()):
-            s = self.gd.strategy(self.strat.itemData(i))
-            t = self.gd.strategy_label(s)
-            mark = "● " if self._preset_key(s["leader"]) in self.settings.presets else ""
-            label = f"{mark}{t['leader']} 【{t['name']}】"
-            if self.strat.itemText(i) != label:
-                self.strat.setItemText(i, label)
-
-    def _load_preset(self, idx: int) -> None:
-        leader = self.strat.itemData(idx)
-        if leader is None:
-            return
-        self._cur = None
-        p = self.settings.presets.get(self._preset_key(leader))
-        self.p_ops.set_checked(p.operators if p else [])
-        self.p_items.set_checked(p.equipment if p else [])
-        self.p_als.set_checked(p.alliances if p else [])
-        self.p_note.setText(p.note if p else "")
-        self.strat_effect.setText(self.gd.strategy_label(self.gd.strategy(leader))["effect"])
-        self._cur = leader
-
-    def _store_preset(self, *_):
-        if not self._cur:
-            return
-        key = self._preset_key(self._cur)
-        ops, items, als = self.p_ops.checked(), self.p_items.checked(), self.p_als.checked()
-        note = self.p_note.text().strip()
-        if ops or items or als or note:
-            self.settings.presets[key] = Preset(key, ops, items, als, note)
-        else:
-            self.settings.presets.pop(key, None)
-        self._label_strategies()
-        self._changed()
 
     # ---------- 저장 ----------
     def _set(self, attr: str, value) -> None:

@@ -57,6 +57,10 @@ QLabel#ChipCore {{ color: {SIGNAL}; border-color: {SIGNAL}; }}
 QSlider::groove:horizontal {{ height: 4px; background: {RULE}; }}
 QSlider::sub-page:horizontal {{ background: {ACCENT}; }}
 QSlider::handle:horizontal {{ width: 12px; margin: -6px 0; background: {INK}; border: 1px solid {ACCENT}; }}
+QListWidget#PresetList {{ background: {PANEL}; border: 1px solid {RULE}; outline: none; }}
+QListWidget#PresetList::item {{ padding: 8px 10px; border-bottom: 1px solid {RULE}; color: {MUTED}; }}
+QListWidget#PresetList::item:selected {{ background: {RAISED}; color: {INK}; border-left: 3px solid {ACCENT}; }}
+QPushButton#ChipButton {{ padding: 3px 8px; font-size: 12px; border-color: {ACCENT}; color: {ACCENT}; }}
 QToolTip {{ background: {PANEL}; color: {INK}; border: 1px solid {RULE}; }}
 QMenu {{ background: {PANEL}; border: 1px solid {RULE}; padding: 4px; }}
 QMenu::item {{ padding: 6px 22px; }}

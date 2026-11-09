@@ -58,15 +58,48 @@ def test_filters(panel):
     assert ops.empty.isVisibleTo(ops)
 
 
-def test_preset_roundtrip(panel):
-    panel.strat.setCurrentIndex(panel.strat.findData("歌利亚"))
+def test_preset_management(panel, monkeypatch):
+    from stronghold_overlay.settings_ui import QInputDialog, QMessageBox
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("아미야 덱", True)))
+    panel._preset_new()
+    p = panel._cur_preset()
+    assert p.name == "아미야 덱"
+    panel._preset_link(panel.p_strat_add.findData("阿米娅"))            # 전략 연결
     click_card(panel.p_ops, "复奏")
-    panel.p_note.setText("tank")
-    assert panel.settings.presets["歌利亚"].operators == ["复奏"]
-    assert panel.strat.currentText().startswith("● ")
-    panel._save()
-    ops, _, note = config.load_settings().preferred("歌利亚")
-    assert "复奏" in ops and note == "tank"
+    click_card(panel.p_items, "歌利亚头盔")
+    assert p.strategies == ["阿米娅"] and p.operators == ["复奏"] and p.equipment == ["歌利亚头盔"]
+
+    names, _, active = panel.settings.preferred("阿米娅")                 # 연결 전략이면 적용
+    assert {"复奏", "歌利亚头盔"} <= names and active == [p]
+    assert panel.settings.preferred("歌利亚")[2] == []                   # 다른 전략이면 미적용
+
+    panel._preset_dup()                                                  # 복제
+    q = panel._cur_preset()
+    assert q.id != p.id and q.operators == p.operators and "사본" in q.name
+    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("새 이름", True)))
+    panel._preset_rename()                                               # 이름 변경
+    assert q.name == "새 이름"
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
+    panel._preset_delete()                                               # 삭제
+    assert q.id not in panel.settings.presets and p.id in panel.settings.presets
+
+    panel._save()                                                        # 저장 → 다시 불러오기
+    loaded = config.load_settings().presets[p.id]
+    assert loaded.name == "아미야 덱" and loaded.equipment == ["歌利亚头盔"]
+
+
+def test_preset_code_roundtrip():
+    p = config.Preset(id="a", name="덱", operators=["仇白", "없는이름"], equipment=["歌利亚头盔"],
+                      strategies=["阿米娅"], note="메모")
+    code = config.export_code(p)
+    assert code.startswith("SHP1.") and "\n" not in code and " " not in code   # 한 줄
+    valid = {"operators": set(GD.operators), "equipment": set(GD.equipment), "alliances": set(GD.alliances),
+             "strategies": {s["leader"] for s in GD.raw["strategies"]}}
+    q = config.import_code(code, valid)
+    assert q.id != p.id and q.name == "덱" and q.operators == ["仇白"]      # 없는 이름은 버림
+    assert q.equipment == ["歌利亚头盔"] and q.strategies == ["阿米娅"] and q.note == "메모"
+    with pytest.raises(ValueError):
+        config.import_code("SHP1.깨진코드")
 
 
 def test_equipment_and_info_popup(panel):
@@ -106,7 +139,8 @@ def test_old_user_file_still_loads(tmp_path, monkeypatch):
     f.write_text('{"enemy_notes": {"x": "y"}, "presets": {"阿米娅": {"operators": ["复奏"], "note": ""}}}', "utf-8")
     monkeypatch.setattr(config, "USER_FILE", f)
     s = config.load_settings()
-    assert s.presets["阿米娅"].operators == ["复奏"] and s.presets["阿米娅"].equipment == []
+    (p,) = s.presets.values()                         # 이전 형식은 전략에 연결된 프리셋으로 변환
+    assert p.name == "阿米娅" and p.strategies == ["阿米娅"] and p.operators == ["复奏"]
 
 
 def test_labels_follow_language(panel):

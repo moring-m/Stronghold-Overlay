@@ -15,6 +15,7 @@ DATA_FILE = DATA_DIR / "prts_stronghold.json"
 I18N_FILE = DATA_DIR / "i18n_names.json"
 AVATAR_DIR = DATA_DIR / "avatars"
 ITEM_DIR = DATA_DIR / "items"
+ICON_DIR = DATA_DIR / "icons"
 TIERS = "ⅠⅡⅢⅣⅤⅥ"
 
 
@@ -101,6 +102,16 @@ class GameData:
 
     def item_icon(self, zh: str) -> Path | None:
         p = ITEM_DIR / f"{zh}.png"
+        return p if p.exists() else None
+
+    def tier_icon(self, tier: str) -> Path | None:
+        if tier not in TIERS:
+            return None
+        p = ICON_DIR / f"tier{TIERS.index(tier) + 1}.png"
+        return p if p.exists() else None
+
+    def alliance_icon(self, zh: str) -> Path | None:
+        p = ICON_DIR / "alliances" / f"{zh}.png"
         return p if p.exists() else None
 
     # ---- OCR 보정 ----

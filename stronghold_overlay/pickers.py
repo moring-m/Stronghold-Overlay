@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
                                QListView, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
                                QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
@@ -35,6 +35,16 @@ def load_pixmap(path, size: int) -> QPixmap | None:
     if pm.isNull():
         return None
     return pm.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+
+_ICONS: dict[tuple, QPixmap | None] = {}
+
+
+def icon(path, size: int) -> QPixmap | None:
+    key = (str(path), size)
+    if key not in _ICONS:
+        _ICONS[key] = load_pixmap(path, size)
+    return _ICONS[key]
 
 
 class CardDelegate(QStyledItemDelegate):
@@ -85,6 +95,9 @@ class CardDelegate(QStyledItemDelegate):
         pm = self.pixmap(zh)
         if pm:
             p.drawPixmap(pr.topLeft() + QPoint((PORTRAIT - pm.width()) // 2, (PORTRAIT - pm.height()) // 2), pm)
+        tier_pm = icon(self.gd.tier_icon(info.get("tier", "")), 20)
+        if tier_pm:   # 등급 아이콘: 초상화 왼쪽 아래
+            p.drawPixmap(pr.left() - 3, pr.bottom() - 17, tier_pm)
         if checked:   # 초상화 왼쪽 위 체크
             cr = QRect(pr.left() - 2, pr.top() - 2, 16, 16)
             p.fillRect(cr, QColor(theme.ACCENT))
@@ -100,47 +113,36 @@ class CardDelegate(QStyledItemDelegate):
         nf = QFont(p.font())
         nf.setPixelSize(14)
         nf.setBold(True)
-        sf = QFont(p.font())
-        sf.setPixelSize(11)
         top = r.top() + 12
         label = self.gd.op_label(zh) if is_op else self.gd.item_label(zh)
-        nfm = QFontMetrics(nf)
         p.setFont(nf)
         p.setPen(QColor(theme.INK))
         p.drawText(QRect(x, top, right - x, 20), Qt.AlignLeft | Qt.AlignVCenter,
-                   nfm.elidedText(label, Qt.ElideRight, right - x))
+                   QFontMetrics(nf).elidedText(label, Qt.ElideRight, right - x))
 
-        # 둘째 줄: 단계 + 맹약 칩 / 단계 + 가격
-        sfm = QFontMetrics(sf)
+        # 둘째 줄: 맹약 아이콘 (핵심 = 금색 테두리) / 장비 가격
+        cy, size = top + 25, 24
+        cx = x
+        sf = QFont(p.font())
+        sf.setPixelSize(11)
         p.setFont(sf)
-        cx, cy, ch = x, top + 26, sfm.height() + 4
-        tier = tier_text(info.get("tier", ""))
-        if tier:
-            p.setPen(QColor(theme.MUTED))
-            w = sfm.horizontalAdvance(tier)
-            p.drawText(QRect(cx, cy, w, ch), Qt.AlignLeft | Qt.AlignVCenter, tier)
-            cx += w + 6
         if is_op:
             if not info:
                 p.setPen(QColor(theme.MUTED))
-                p.drawText(QRect(cx, cy, r.right() - cx, ch), Qt.AlignLeft | Qt.AlignVCenter, tr("prototype"))
+                p.drawText(QRect(cx, cy, r.right() - cx, size), Qt.AlignLeft | Qt.AlignVCenter, tr("prototype"))
             for a in info.get("alliances", []):
-                text = self.gd.alliance_label(a)
-                w = sfm.horizontalAdvance(text) + 10
-                if cx + w > r.right() - 6:
-                    break
-                col = QColor(theme.SIGNAL if self.gd.alliances.get(a, {}).get("type") == "core" else theme.MUTED)
-                rect = QRect(cx, cy, w, ch)
-                fill = QColor(col)
-                fill.setAlpha(28)
-                p.fillRect(rect, fill)
-                p.setPen(QPen(col, 1))
-                p.drawRect(rect.adjusted(0, 0, -1, -1))
-                p.drawText(rect, Qt.AlignCenter, text)
-                cx += w + 4
+                core = self.gd.alliances.get(a, {}).get("type") == "core"
+                box = QRect(cx, cy, size, size)
+                p.fillRect(box, QColor(0, 0, 0, 120))
+                p.setPen(QPen(QColor(theme.SIGNAL if core else theme.RULE), 1))
+                p.drawRect(box.adjusted(0, 0, -1, -1))
+                apm = icon(self.gd.alliance_icon(a), size - 4)
+                if apm:
+                    p.drawPixmap(box.left() + 2, box.top() + 2, apm)
+                cx += size + 4
         elif info.get("price"):
             p.setPen(QColor(theme.SIGNAL))
-            p.drawText(QRect(cx, cy, r.right() - cx, ch), Qt.AlignLeft | Qt.AlignVCenter,
+            p.drawText(QRect(cx, cy, r.right() - cx, size), Qt.AlignLeft | Qt.AlignVCenter,
                        tr("price_n", n=info["price"]))
 
         # ⓘ
@@ -220,6 +222,7 @@ class CardPicker(QWidget):
             it.setData(KEY, zh)
             it.setData(CHECKED, False)
             it.setData(SEARCH, self._search_text(zh))
+            it.setToolTip(self._tooltip(zh))
             self.list.addItem(it)
         lay.addWidget(self.list, 1)
         lay.addWidget(self.empty)
@@ -230,8 +233,13 @@ class CardPicker(QWidget):
         bl.addWidget(QLabel(tr("tier")))
         self.tier_group = QButtonGroup(self)
         for i, label in enumerate([*"123456", tr("all")]):
-            b = QPushButton(label, checkable=True, objectName="Seg")
-            if i == 6:
+            pm = icon(gd.tier_icon(TIERS[i]), 22) if i < 6 else None
+            b = QPushButton("" if pm else label, checkable=True, objectName="Seg")
+            if pm:
+                b.setIcon(QIcon(pm))
+                b.setIconSize(QSize(22, 22))
+                b.setToolTip(tier_text(TIERS[i]))
+            else:
                 b.setMinimumWidth(52)
             self.tier_group.addButton(b, i)
             bl.addWidget(b)
@@ -267,7 +275,8 @@ class CardPicker(QWidget):
         c.addItem(tr("all_" + kind), None)
         for zh, a in self.gd.alliances.items():
             if a["type"] == kind:
-                c.addItem(self.gd.alliance_label(zh), zh)
+                pm = icon(self.gd.alliance_icon(zh), 18)
+                c.addItem(QIcon(pm) if pm else QIcon(), self.gd.alliance_label(zh), zh)
         return c
 
     def _search_text(self, zh: str) -> str:
@@ -277,6 +286,17 @@ class CardPicker(QWidget):
         for a in self.gd.operators.get(zh, {}).get("alliances", []) if self.kind == "operator" else []:
             parts += [a] + [self.gd.names.get(lang, {}).get("alliances", {}).get(a, "") for lang in ("ko", "en")]
         return " ".join(parts).lower()
+
+    def _tooltip(self, zh: str) -> str:
+        if self.kind == "operator":
+            info = self.gd.operators.get(zh)
+            label = self.gd.op_label(zh)
+            if not info:
+                return label
+            return f"{label} · {tier_text(info['tier'])}\n" + " / ".join(
+                self.gd.alliance_label(a) for a in info["alliances"])
+        info = self.gd.equipment.get(zh, {})
+        return f"{self.gd.item_label(zh)} · {tier_text(info.get('tier', ''))}"
 
     def items(self):
         return (self.list.item(i) for i in range(self.list.count()))
@@ -353,24 +373,34 @@ class InfoPopup(QWidget):
         info = (gd.operators if is_op else gd.equipment).get(zh, {})
 
         head = QHBoxLayout()
-        icon = QLabel()
+        portrait = QLabel()
         pm = load_pixmap(gd.avatar(zh) if is_op else gd.item_icon(zh), 72)
         if pm:
-            icon.setPixmap(pm)
-        icon.setFixedSize(76, 76)
-        head.addWidget(icon)
+            portrait.setPixmap(pm)
+        portrait.setFixedSize(76, 76)
+        head.addWidget(portrait)
         title = QVBoxLayout()
         name = gd.op_label(zh) if is_op else gd.item_label(zh)
         title.addWidget(QLabel(name, objectName="Title"))
-        sub = " · ".join(x for x in (zh if zh != name else "", tier_text(info.get("tier", "")),
+        tpm = icon(gd.tier_icon(info.get("tier", "")), 22)
+        if tpm:
+            tier_lbl = QLabel()
+            tier_lbl.setPixmap(tpm)
+            tier_lbl.setToolTip(tier_text(info.get("tier", "")))
+            head.addWidget(tier_lbl, 0, Qt.AlignTop)
+        sub = " · ".join(x for x in (zh if zh != name else "",
                                      tr("price_n", n=info["price"]) if info.get("price") else "") if x)
         title.addWidget(QLabel(sub, objectName="Muted"))
         if is_op and info.get("alliances"):
             chips = QHBoxLayout()
             for a in info["alliances"]:
                 core = gd.alliances.get(a, {}).get("type") == "core"
-                c = QLabel(gd.alliance_label(a), objectName="ChipCore" if core else "Chip")
-                chips.addWidget(c)
+                pm = icon(gd.alliance_icon(a), 18)
+                if pm:
+                    ic = QLabel()
+                    ic.setPixmap(pm)
+                    chips.addWidget(ic)
+                chips.addWidget(QLabel(gd.alliance_label(a), objectName="ChipCore" if core else "Chip"))
             chips.addStretch(1)
             title.addLayout(chips)
         head.addLayout(title, 1)
@@ -428,6 +458,10 @@ class AlliancePicker(QWidget):
             items = [(zh, a) for zh, a in gd.alliances.items() if a["type"] == kind]
             for i, (zh, a) in enumerate(items):
                 b = QPushButton(gd.alliance_label(zh), checkable=True)
+                pm = icon(gd.alliance_icon(zh), 22)
+                if pm:
+                    b.setIcon(QIcon(pm))
+                    b.setIconSize(QSize(22, 22))
                 b.setToolTip(f"{zh} · {tr('members_n', n=len(a['operators']))}")
                 b.setMinimumHeight(34)
                 b.toggled.connect(lambda *_: self.changed.emit(self.checked()))

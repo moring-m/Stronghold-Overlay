@@ -7,6 +7,7 @@
       맹약 영어 이름은 이 파일의 표 (국가명은 공식 표기, 나머지는 비공식 번역)
       장비/특질의 영어 공식 번역은 없어 중국어로 표시
 - 초상화: PRTS 头像_<이름>.png → data/avatars/<이름>.png (96px)
+- 등급/맹약 아이콘: arknights1234 images/stage*.webp, oaths/*.webp → data/icons
 
 받아온 JS 파일은 실행하지 않고 텍스트로만 파싱한다.
 """
@@ -171,7 +172,25 @@ def main() -> None:
         miss = [n for n in names if n not in out[lang]["operators"]]
         print(f"{lang}: 오퍼레이터 {len(out[lang]['operators'])}/{len(names)} (없음: {', '.join(miss) or '-'})")
 
+    sync_icons(ak, zh_alliances)
     sync_avatars(names)
+
+
+def sync_icons(ak: dict, zh_alliances: list[str]) -> None:
+    """arknights1234의 등급 아이콘(stage1~6)과 맹약 아이콘 → data/icons (PNG)."""
+    from PIL import Image
+    base = AK1234.rsplit("/js/", 1)[0] + "/"
+    icons = DATA / "icons"
+    (icons / "alliances").mkdir(parents=True, exist_ok=True)
+    jobs = [(f"images/stage{n}.webp", icons / f"tier{n}.png", 48) for n in range(1, 7)]
+    jobs += [(o["img"], icons / "alliances" / f"{z}.png", 48) for z, o in zip(zh_alliances, ak["oaths"])]
+    for src, dest, size in jobs:
+        if dest.exists():
+            continue
+        img = Image.open(io.BytesIO(fetch(base + src))).convert("RGBA")
+        img.thumbnail((size, size), Image.LANCZOS)
+        img.save(dest, optimize=True)
+    print(f"아이콘 {len(jobs)}개")
 
 
 def sync_avatars(names: list[str], force: bool = False) -> None:
@@ -199,7 +218,10 @@ def sync_avatars(names: list[str], force: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    if "--avatars" in sys.argv:   # 초상화만 다시 받기
+    if "--icons" in sys.argv:     # 등급/맹약 아이콘만
+        prts = json.loads((DATA / "prts_stronghold.json").read_text("utf-8"))
+        sync_icons(parse_js_object(fetch(AK1234).decode("utf-8")), list(prts["alliances"]))
+    elif "--avatars" in sys.argv:   # 초상화만 다시 받기
         prts = json.loads((DATA / "prts_stronghold.json").read_text("utf-8"))
         protos = sorted({o["prototype"] for o in prts["operators"].values() if o.get("prototype")})
         sync_avatars(list(prts["operators"]) + protos)

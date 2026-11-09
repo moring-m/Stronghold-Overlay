@@ -110,13 +110,10 @@ class Overlay(QWidget):
     def strategy(self) -> dict | None:
         return self.gd.strategy(self.manual_strategy or self.state.strategy)
 
-    def preset_key(self) -> str | None:
+    def preferred(self):
+        """(강조 이름, 선호 맹약, 적용된 프리셋 목록)."""
         s = self.strategy
-        keys = [k for k in (s and s["leader"], s and s["name"], self.state.strategy) if k]
-        return next((k for k in keys if k in self.settings.presets), None)
-
-    def preferred(self) -> tuple[set[str], set[str], str]:
-        return self.settings.preferred(self.preset_key())
+        return self.settings.preferred(s["leader"] if s else None)
 
     def highlighted(self) -> list[int]:
         """노란 테두리를 그릴 상점 칸 번호."""
@@ -293,13 +290,12 @@ class App(QObject):
         self.overlay.update()
         if not self.settings.notify:
             return
-        key = self.overlay.preset_key()
+        _, alliances, active = self.overlay.preferred()
         if state.strategy and state.strategy != self._last_strategy:
             self._last_strategy = state.strategy
-            if key:
-                t = self.gd.strategy_label(self.gd.strategy(key))
-                self.toast.show_message(tr("toast_preset", l=t["leader"], n=t["name"]), self.game)
-        _, alliances, _ = self.overlay.preferred()
+            linked = [p.name for p in active if p.id != self.settings.active_preset]
+            if linked:
+                self.toast.show_message(tr("toast_preset", n=", ".join(linked)), self.game)
         bans = tuple(sorted(alliances & set(state.match.banned_alliances)))
         if bans and bans != self._last_bans:
             self.toast.show_message(tr("toast_banned", x=", ".join(self.gd.alliance_label(a) for a in bans)),
@@ -366,6 +362,8 @@ def selftest() -> int:
     miss_it = [n for n in gd.equipment if not gd.item_icon(n)]
     if miss_av or miss_it:
         problems.append(f"images missing={len(miss_av) + len(miss_it)}")
+    if not all(gd.tier_icon(t) for t in "ⅠⅡⅢⅣⅤⅥ") or not all(gd.alliance_icon(a) for a in gd.alliances):
+        problems.append("tier/alliance icons missing")
     if not (config.ROOT / "assets" / "icon.png").exists():
         problems.append("icon missing")
     Ocr().read(np.zeros((90, 160, 3), np.uint8))
