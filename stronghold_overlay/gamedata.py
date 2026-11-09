@@ -63,7 +63,7 @@ class GameData:
         return self._closest(text, self.alliances, 0.67)
 
     def operator_name(self, text: str) -> str | None:
-        """상점 이름 칸 → 오퍼레이터 이름 또는 원형 이름(Sharp 등)."""
+        """상점 이름 칸의 OCR 오타 보정 (원형 카드 이름 Sharp 등도 그대로 허용)."""
         return self._closest(text, self.operators.keys() | self.prototypes, 0.6)
 
     def strategy(self, text: str | None) -> dict | None:
@@ -104,18 +104,3 @@ class GameData:
             if g in text:
                 return g, enemies
         return None
-
-    def resolve(self, name: str, tags: list[str], tier: str | None) -> list[str]:
-        """상점 카드가 가리킬 수 있는 실제 오퍼레이터 후보.
-
-        원형 카드(Sharp/Misery 등)는 등급과 맹약 태그로 후보를 좁힌다.
-        """
-        if name in self.operators:
-            return [name]
-        if name not in self.prototypes:
-            return []
-        cands = [n for n, o in self.operators.items()
-                 if o.get("prototype") == name
-                 and (tier is None or o["tier"] == tier)
-                 and set(tags) <= set(o["alliances"])]
-        return cands

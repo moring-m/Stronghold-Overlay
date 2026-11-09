@@ -14,7 +14,7 @@ from . import config
 from .capture import Capturer, find_window
 from .detectors import SHOP_STEP, SHOP_W, SHOP_X0, SHOP_Y_TOP, update_state
 from .gamedata import GameData
-from .models import GameState, Screen, ShopCard
+from .models import GameState, Screen
 
 MANUAL_AUTO = "(자동 감지)"
 YELLOW = QColor(255, 210, 0)
@@ -79,15 +79,6 @@ class Overlay(QWidget):
         self.show()
         self.update()
 
-    @staticmethod
-    def card_match(c: ShopCard, ops: set[str]) -> str | None:
-        """'sure' = 확실히 선호 오퍼레이터, 'maybe' = 원형 카드 후보 중에 선호가 있음."""
-        if c.operator in ops or (len(c.candidates) == 1 and c.candidates[0] in ops):
-            return "sure"
-        if any(x in ops for x in c.candidates):
-            return "maybe"
-        return None
-
     def info_lines(self) -> list[str]:
         ops, alliances, note = self.preferred()
         s, st = self.state, self.strategy
@@ -122,11 +113,6 @@ class Overlay(QWidget):
                 lines.append(f"특훈[{g[0]}]: " + "、".join(g[1][:6]) + (" 외" if len(g[1]) > 6 else ""))
             else:
                 lines.append(f"특훈: {e}")
-
-        if s.screen is Screen.BATTLE:
-            for c in s.shop:
-                if c.operator not in self.gd.operators and c.candidates and self.card_match(c, ops):
-                    lines.append(f"{c.slot + 1}번 {c.operator}{c.tier or ''} → " + "/".join(c.candidates))
         return lines
 
     def paintEvent(self, _):
@@ -135,11 +121,10 @@ class Overlay(QWidget):
         ops, _, _ = self.preferred()
 
         if self.state.screen is Screen.BATTLE:
+            p.setPen(QPen(YELLOW, 4))
             for c in self.state.shop:
-                kind = self.card_match(c, ops)
-                if not kind:
+                if c.operator not in ops:
                     continue
-                p.setPen(QPen(YELLOW, 4, Qt.SolidLine if kind == "sure" else Qt.DashLine))
                 x = int((SHOP_X0 + c.slot * SHOP_STEP) * w)
                 p.drawRect(x, int(SHOP_Y_TOP * h), int(SHOP_W * w), int((0.99 - SHOP_Y_TOP) * h))
 

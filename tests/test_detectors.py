@@ -34,15 +34,11 @@ def test_match_info_banned_by_icon_color():
     assert GD.special_group(m.special_enemies[0])[0] == "飞行"
 
 
-def test_shop_resolves_prototype():
-    boxes = [tb("茶灵巧", 610, 690), tb("Sharp", 630, 712),     # 원형 카드
-             tb("叙拉古", 760, 670), tb("多迅捷", 760, 690), tb("忍冬", 760, 712)]
-    shop = parse_shop(boxes, None, GD)
+def test_shop_names_only():
+    boxes = [tb("茶灵巧", 610, 690), tb("Sharp", 630, 712),     # 태그 줄은 무시
+             tb("叙拉古", 760, 670), tb("忍冬", 760, 712), tb("3", 735, 545, 15)]
+    shop = parse_shop(boxes, GD)
     assert [(c.slot, c.operator) for c in shop] == [(2, "Sharp"), (3, "忍冬")]
-    assert shop[0].tags == ["灵巧"]
-    assert set(shop[0].candidates) == {"仇白", "佩佩", "隐德来希"}       # 등급 모르면 3명
-    assert GD.resolve("Sharp", ["灵巧"], "Ⅳ") == ["仇白"]               # 등급까지 알면 확정
-    assert shop[1].candidates == ["忍冬"] and shop[1].tags == ["叙拉古", "迅捷"]
 
 
 def test_strategy_name():

@@ -12,10 +12,8 @@ from .models import GameState, MatchInfo, Screen, ShopCard, TextBox
 # 상점 카드 6칸
 SHOP_X0, SHOP_STEP, SHOP_W = 0.187, 0.1155, 0.112
 SHOP_Y_TOP = 0.74
-SHOP_TAG_Y = 0.85            # 태그+이름 영역 시작
-SHOP_NAME_Y = 0.92           # 이 아래 텍스트 = 이름
+SHOP_NAME_Y = 0.92           # 이 아래 텍스트 = 오퍼레이터 이름
 SHOP_SLOTS = 6
-TIER_BOX = (0.748, 0.785, 0.05)   # 등급 배지: y0, y1, 폭
 
 STRATEGY_PANEL_X = 0.75
 INFO_LEFT_PANEL_MAX_X = 0.68
@@ -23,9 +21,6 @@ ICON_OFFSET_Y = 0.075
 ICON_RADIUS = 0.025
 BOSS_PORTRAIT = (0.69, 0.40, 0.785, 0.57)   # x0, y0, x1, y1 (敌方领袖 왼쪽 초상화)
 BOSS_MATCH_MIN = 0.97
-
-ROMAN = {"I": "Ⅰ", "II": "Ⅱ", "III": "Ⅲ", "IV": "Ⅳ", "V": "Ⅴ", "VI": "Ⅵ"}
-
 
 def classify_screen(boxes: list[TextBox]) -> Screen:
     texts = " ".join(b.text for b in boxes)
@@ -111,67 +106,25 @@ def detect_strategy(boxes: list[TextBox]) -> str | None:
 
 
 # ---------- 전투/상점 ----------
-def read_tier(frame: np.ndarray, slot: int) -> str | None:
-    """카드 좌상단 로마 숫자 배지를 획 모양으로 판별 (OCR로는 읽히지 않음).
-
-    밝은 픽셀의 세로 열 덩어리: 좁으면 I, 넓으면 V.
-    """
-    h, w = frame.shape[:2]
-    y0, y1, bw = TIER_BOX
-    x0 = int((SHOP_X0 + slot * SHOP_STEP) * w)
-    badge = frame[int(y0 * h):int(y1 * h), x0:x0 + int(bw * w)]
-    if badge.size == 0:
+def card_name(slot: int, text: str, gd: GameData) -> ShopCard | None:
+    text = text.strip()
+    if not text or text.isdigit():
         return None
-    bh = badge.shape[0]
-    mask = badge.min(axis=2) > 190
-    cols = mask.sum(axis=0) > 0
-    seq, start = "", None
-    for x, on in enumerate([*cols, False]):
-        if on and start is None:
-            start = x
-        elif not on and start is not None:
-            width = x - start
-            if mask[:, start:x].sum() >= bh * 0.7:  # 잡티 제외
-                seq += "V" if width > bh * 0.45 else "I"
-            start = None
-    return ROMAN.get(seq)
+    return ShopCard(slot=slot, operator=gd.operator_name(text) or text)
 
 
-def build_card(slot: int, lines: list[TextBox], tier: str | None, gd: GameData) -> ShopCard | None:
-    """한 칸의 텍스트 줄들(위→아래) → 카드. 맨 아래 줄이 이름."""
-    lines = [b for b in sorted(lines, key=lambda b: b.cy) if not b.text.strip().isdigit()]
-    if not lines:
-        return None
-    raw_name = lines[-1].text.strip()
-    name = gd.operator_name(raw_name) or raw_name
-    tags = [t for t in (gd.alliance(b.text) for b in lines[:-1]) if t]
-    card = ShopCard(slot=slot, operator=name, tags=tags, tier=tier)
-    card.candidates = gd.resolve(name, tags, tier)
-    return card
-
-
-def slot_of(b: TextBox) -> int | None:
-    slot = int((b.cx - SHOP_X0) // SHOP_STEP)
-    if 0 <= slot < SHOP_SLOTS and (b.cx - SHOP_X0) - slot * SHOP_STEP <= SHOP_W:
-        return slot
-    return None
-
-
-def parse_shop(boxes: list[TextBox], frame: np.ndarray | None, gd: GameData) -> list[ShopCard]:
-    """전체 화면 OCR 결과에서 상점 카드를 읽는다."""
-    by_slot: dict[int, list[TextBox]] = {}
+def parse_shop(boxes: list[TextBox], gd: GameData) -> list[ShopCard]:
+    """전체 화면 OCR 결과에서 상점 카드 하단의 오퍼레이터 이름만 읽는다."""
+    cards: dict[int, ShopCard] = {}
     for b in boxes:
-        s = slot_of(b) if b.cy >= SHOP_TAG_Y else None
-        if s is not None:
-            by_slot.setdefault(s, []).append(b)
-    cards = []
-    for s, lines in sorted(by_slot.items()):
-        if not any(b.cy >= SHOP_NAME_Y for b in lines):
+        if b.cy < SHOP_NAME_Y:
             continue
-        card = build_card(s, lines, read_tier(frame, s) if frame is not None else None, gd)
-        if card:
-            cards.append(card)
-    return cards
+        slot = int((b.cx - SHOP_X0) // SHOP_STEP)
+        if 0 <= slot < SHOP_SLOTS and (b.cx - SHOP_X0) - slot * SHOP_STEP <= SHOP_W:
+            card = card_name(slot, b.text, gd)
+            if card:
+                cards[slot] = card
+    return [c for _, c in sorted(cards.items())]
 
 
 def update_state(state: GameState, boxes: list[TextBox], frame: np.ndarray | None,
@@ -186,5 +139,5 @@ def update_state(state: GameState, boxes: list[TextBox], frame: np.ndarray | Non
         if found:
             state.strategy = found
     elif screen is Screen.BATTLE:
-        state.shop = parse_shop(boxes, frame, gd)
+        state.shop = parse_shop(boxes, gd)
     return state

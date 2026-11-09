@@ -41,10 +41,7 @@ class MatchInfo:
 @dataclass
 class ShopCard:
     slot: int
-    operator: str                                       # 카드에 표시된 이름 (원형이면 Sharp 등)
-    tags: list[str] = field(default_factory=list)       # 맹약 태그 (PRTS 이름으로 보정됨)
-    tier: str | None = None                             # Ⅰ~Ⅵ
-    candidates: list[str] = field(default_factory=list)  # 실제 오퍼레이터 후보
+    operator: str  # 카드에 표시된 이름 그대로 (PRTS 이름으로 오타만 보정)
 
 
 @dataclass
