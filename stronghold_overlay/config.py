@@ -39,6 +39,16 @@ class Settings:
         return ops, al, note
 
 
+def lookup_note(notes: dict[str, str], name: str) -> str:
+    """이름이 정확히 같지 않아도(OCR 누락 등) 앞부분이 일치하면 메모를 찾는다."""
+    if name in notes:
+        return notes[name]
+    for k, v in notes.items():
+        if name and (k.startswith(name) or name.startswith(k)):
+            return v
+    return ""
+
+
 def load_settings() -> Settings:
     raw = json.loads(PRESETS_FILE.read_text("utf-8"))
     if USER_FILE.exists():  # 사용자 파일이 기본값을 덮어씀
