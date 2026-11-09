@@ -6,6 +6,7 @@ if not exist .venv\installed.ok (
   python -m venv .venv || (echo Python not found. Install Python 3.10+ and check "Add python.exe to PATH". & pause & exit /b 1)
   echo [2/2] Installing packages... (first run only)
   .venv\Scripts\python -m pip install -r requirements.txt || (pause & exit /b 1)
+  .venv\Scripts\python -m pip install --no-deps -r requirements-ocr.txt || (pause & exit /b 1)
   echo ok> .venv\installed.ok
 )
 .venv\Scripts\python -m stronghold_overlay

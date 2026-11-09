@@ -14,7 +14,7 @@ from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QSystemTrayIcon, QWidget
 
 from . import capture, config, theme
-from .detectors import SHOP_STEP, SHOP_W, SHOP_X0, SHOP_Y_TOP
+from .detectors import SHOP_STEP, SHOP_W, SHOP_X0, SHOP_Y_TOP, changed, screen_signature
 from .gamedata import GameData
 from .hotkeys import Hotkeys
 from .inputwatch import InputWatcher
@@ -88,7 +88,7 @@ class Worker(QObject):
         except Exception:
             log.exception("OCR 초기화 실패")
             return
-        last_run, confirm_at, tick = 0.0, None, 0
+        last_run, confirm_at, tick, last_sig = 0.0, None, 0, None
         while not self._stop:
             time.sleep(0.02)
             rect = self.rect
@@ -105,6 +105,10 @@ class Worker(QObject):
             tick += 1
             try:
                 frame = cap.grab(rect)
+                sig = screen_signature(frame)
+                if reason == "periodic" and not changed(last_sig, sig):
+                    continue        # 읽는 영역이 그대로면 OCR 생략 (가만히 있을 때 CPU 절약)
+                last_sig = sig
                 t = time.perf_counter()
                 ocr.scan(frame, self.state, self.gd)   # 화면별 필요한 영역만 읽음
                 log.debug("인식 %s %.0fms %s", reason, (time.perf_counter() - t) * 1000, self.state.screen.value)

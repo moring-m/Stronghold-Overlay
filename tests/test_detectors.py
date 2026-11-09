@@ -87,3 +87,16 @@ def test_scan_reads_only_regions():
     o = FakeOcr([], shop=[ShopCard(1, "复奏")])
     st = o.scan(frame, GameState(screen=Screen.BATTLE), GD)
     assert [c.operator for c in st.shop] == ["复奏"] and o.calls == ["shop"]     # 전투 중엔 상점 칸만
+
+
+def test_screen_signature_detects_change_only_in_read_regions():
+    import numpy as np
+    from stronghold_overlay.detectors import changed, screen_signature
+    a = np.zeros((761, 1353, 3), np.uint8)
+    b = a.copy()
+    b[300:400, 300:600] = 255                    # 전장 한가운데(읽지 않는 곳)만 바뀜
+    assert not changed(screen_signature(a), screen_signature(b))
+    c = a.copy()
+    c[700:750, 250:1200] = 200                   # 상점 이름 줄이 바뀜
+    assert changed(screen_signature(a), screen_signature(c))
+    assert changed(None, screen_signature(a))

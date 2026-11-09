@@ -84,17 +84,14 @@ class CardDelegate(QStyledItemDelegate):
     def __init__(self, gd: GameData, kind: str, parent=None) -> None:
         super().__init__(parent)
         self.gd, self.kind = gd, kind
-        self._pix: dict[str, QPixmap | None] = {}
 
     def sizeHint(self, opt, index):
         grid = self.parent().gridSize() if self.parent() else CARD
         return grid if grid.isValid() else CARD
 
     def pixmap(self, zh: str) -> QPixmap | None:
-        if zh not in self._pix:
-            path = self.gd.avatar(zh) if self.kind == "operator" else self.gd.item_icon(zh)
-            self._pix[zh] = load_pixmap(path, PORTRAIT)
-        return self._pix[zh]
+        # 캐시는 모든 선택기가 공유 (설정 창 안에 선택기가 여러 개 있음)
+        return icon(self.gd.avatar(zh) if self.kind == "operator" else self.gd.item_icon(zh), PORTRAIT)
 
     def editorEvent(self, event, model, opt, index):
         # ⓘ 클릭은 선택 토글 대신 정보 창

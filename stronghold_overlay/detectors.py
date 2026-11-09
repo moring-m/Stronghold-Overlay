@@ -21,6 +21,24 @@ REGION_BUTTONS = (0.76, 0.62, 1.0, 0.72)      # 전투: "冻结", "刷新"
 REGION_STRATEGY = (0.75, 0.40, 1.0, 0.62)     # 전략 상세: "初始生命值", 발기인 이름
 REGION_ALLIANCES = (0.04, 0.28, 0.68, 0.97)   # 본국 정보: 맹약 이름들
 
+REGION_SHOP = (0.18, 0.90, 0.88, 0.99)        # 상점 카드 이름 줄
+
+
+def screen_signature(frame: np.ndarray) -> np.ndarray:
+    """읽는 영역들만 아주 작게 줄인 흑백 이미지 — 화면이 바뀌었는지 싸게 비교하는 용도."""
+    h, w = frame.shape[:2]
+    parts = []
+    for x0, y0, x1, y1 in (REGION_TITLE, REGION_BUTTONS, REGION_STRATEGY, REGION_SHOP):
+        crop = frame[int(y0 * h):int(y1 * h):4, int(x0 * w):int(x1 * w):4]
+        parts.append(crop.mean(axis=2).astype(np.int16).ravel())   # 4픽셀 간격 표본
+    return np.concatenate(parts)
+
+
+def changed(a: np.ndarray | None, b: np.ndarray, threshold: float = 2.0) -> bool:
+    """평균 밝기 차이가 threshold(0~255) 이상이면 바뀐 것으로 본다."""
+    return a is None or a.shape != b.shape or float(np.abs(a - b).mean()) >= threshold
+
+
 STRATEGY_PANEL_X = 0.75
 INFO_LEFT_PANEL_MAX_X = 0.68
 ICON_OFFSET_Y = 0.075

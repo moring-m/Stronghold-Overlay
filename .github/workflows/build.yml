@@ -21,6 +21,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt pyinstaller pytest
+          pip install --no-deps -r requirements-ocr.txt
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
@@ -33,6 +34,14 @@ jobs:
           $p = Start-Process dist/StrongholdOverlay/StrongholdOverlay.exe -ArgumentList "--selftest" -Wait -PassThru
           Get-Content selftest.txt
           if ($p.ExitCode -ne 0) { exit 1 }
+      - name: Size report
+        shell: pwsh
+        run: |
+          $d = "dist/StrongholdOverlay"
+          "{0:N1} MB total" -f ((Get-ChildItem $d -Recurse | Measure-Object Length -Sum).Sum / 1MB)
+          Get-ChildItem "$d/_internal" | ForEach-Object {
+            $s = if ($_.PSIsContainer) { (Get-ChildItem $_.FullName -Recurse | Measure-Object Length -Sum).Sum } else { $_.Length }
+            [pscustomobject]@{ MB = [math]::Round($s / 1MB, 1); Name = $_.Name } } | Sort-Object MB -Descending | Select-Object -First 15 | Format-Table -AutoSize
       - name: Zip
         shell: pwsh
         run: Compress-Archive -Path dist/StrongholdOverlay -DestinationPath StrongholdOverlay-win64.zip

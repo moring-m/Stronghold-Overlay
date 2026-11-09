@@ -69,6 +69,7 @@ python tools/sync_i18n.py      # 번역, 오퍼레이터 초상화
 ## 소스에서 실행 (개발자용)
 ```
 pip install -r requirements.txt
+pip install --no-deps -r requirements-ocr.txt
 python -m stronghold_overlay
 ```
 `run.bat`을 더블클릭해도 같은 일을 합니다. 실행 파일은 `pyinstaller --noconfirm StrongholdOverlay.spec`으로 직접 만들 수 있습니다.
