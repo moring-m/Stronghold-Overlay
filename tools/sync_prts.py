@@ -1,4 +1,4 @@
-"""PRTS 위키에서 위수 협의(卫戍协议·规程) 데이터를 받아 data/prts_stronghold.json 으로 저장.
+"""PRTS 위키에서 위수 협의: 규정(卫戍协议·规程) 데이터를 받아 data/prts_stronghold.json 으로 저장.
 
     python tools/sync_prts.py [--page "卫戍协议·规程/PRTS盟约记录"]
 
@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import prts_api  # noqa: E402
 
 OUT = Path(__file__).resolve().parent.parent / "data" / "prts_stronghold.json"
-BOSS_DIR = OUT.parent / "bosses"   # 보스 초상화 (OCR이 못 읽는 한자 대비, 이미지 매칭용)
+ITEM_DIR = OUT.parent / "items"    # 장비 아이콘
 DEFAULT_PAGE = "卫戍协议·规程/PRTS盟约记录"
 
 
@@ -68,7 +68,7 @@ def plain(s: str) -> str:
     s = re.sub(r"\{\{color\|[^|{}]*\|([^{}]*)\}\}", r"\1", s)
     s = re.sub(r"\{\{[^{}]*\}\}", "", s)
     s = re.sub(r"<br\s*/?>", "\n", s)
-    s = re.sub(r"<[^>]+>", "", s)
+    s = re.sub(r"</?[a-zA-Z][^>]*>", "", s)   # HTML 태그만 (<获得时> 같은 조건 표기는 유지)
     s = re.sub(r"\[\[(?:[^|\]]*\|)?([^\]]*)\]\]", r"\1", s)
     s = s.replace("'''", "")
     return s.strip()
@@ -110,16 +110,19 @@ def parse(text: str) -> dict:
             "unlock": plain(t.get("解锁条件", "")),
         })
 
-    bosses = []
-    for t in templates(section(text, "领袖"), "敌人头像"):
-        if t["1"] not in bosses:
-            bosses.append(t["1"])
-
-    special = {}
-    for row in re.split(r"\n\|-", section(text, "战术特训敌人")):
-        m = re.search(r"<br>\s*([^\n|]+)\n", row)
-        if m and "敌人头像" in row:
-            special[m.group(1).strip()] = heads(row, "敌人头像")
+    equipment = {}
+    for t in templates(section(text, "装备数据库"), ":卫戍协议/道具"):
+        if t.get("类型") != "装备" or not t.get("名称"):
+            continue
+        eff = plain(t.get("效果", ""))
+        basic, _, adv = eff.partition("\n")
+        equipment[t["名称"]] = {
+            "tier": "ⅠⅡⅢⅣⅤⅥ"[int(t.get("等阶", 1)) - 1] if t.get("等阶", "").isdigit() else "",
+            "price": t.get("售价", ""),
+            "effect": basic.replace("【基础】", "").strip(),
+            "effect_adv": adv.replace("【进阶】", "").strip(),
+            "desc": plain(t.get("描述", "")),
+        }
 
     operators = {}
     db = section(text, "干员数据库")
@@ -134,11 +137,13 @@ def parse(text: str) -> dict:
                 # 미보유 시 상점에 대신 표시되는 원형 이름 (예: Sharp(卫戍协议) -> Sharp)
                 "prototype": re.sub(r"\(卫戍协议\)$", "", t.get("原型", "")).strip(),
                 "alliances": [t[k] for k in ("盟约1", "盟约2", "盟约3") if t.get(k)],
-                "trait": plain(t.get("特质2") or t.get("特质1", "")),
+                "trait_type": t.get("特质类型", ""),
+                "trait": plain(t.get("特质1", "")),
+                "trait_adv": plain(t.get("特质2", "")),
             }
 
-    return {"alliances": alliances, "strategies": strategies, "bosses": bosses,
-            "special_enemies": special, "operators": operators}
+    return {"alliances": alliances, "strategies": strategies, "operators": operators,
+            "equipment": equipment}
 
 
 def main() -> None:
@@ -149,12 +154,14 @@ def main() -> None:
     data = {"source": f"https://prts.wiki/w/{args.page}", "fetched": date.today().isoformat(), **data}
     OUT.write_text(json.dumps(data, ensure_ascii=False, indent=1), "utf-8")
 
-    BOSS_DIR.mkdir(exist_ok=True)
-    files = {f"头像_敌人_{b}.png": b for b in data["bosses"]}
+    ITEM_DIR.mkdir(exist_ok=True)
+    files = {f"卫戍协议 道具 {n}.png": n for n in data["equipment"]}
     for fname, url in prts_api.image_urls(list(files)).items():
-        prts_api.download(url, BOSS_DIR / f"{files[fname]}.png")
+        dest = ITEM_DIR / f"{files[fname]}.png"
+        if not dest.exists():
+            prts_api.download(url, dest)
     print(f"{OUT.name}: 맹약 {len(data['alliances'])}, 전략 {len(data['strategies'])}, "
-          f"보스 {len(data['bosses'])}, 특훈 {len(data['special_enemies'])}, 오퍼레이터 {len(data['operators'])}")
+          f"오퍼레이터 {len(data['operators'])}, 장비 {len(data['equipment'])}")
 
 
 if __name__ == "__main__":

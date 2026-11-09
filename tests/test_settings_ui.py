@@ -69,6 +69,46 @@ def test_preset_roundtrip(panel):
     assert "复奏" in ops and note == "tank"
 
 
+def test_equipment_and_info_popup(panel):
+    from stronghold_overlay.pickers import InfoPopup
+    it = click_card(panel.items, "歌利亚头盔")
+    assert it.data(CHECKED) and panel.settings.base_equipment == ["歌利亚头盔"]
+    names, _, _ = panel.settings.preferred(None)
+    assert "歌利亚头盔" in names                      # 오버레이 강조 대상에 포함
+    pop = InfoPopup(GD, "equipment", "歌利亚头盔")
+    texts = " ".join(l.text() for l in pop.findChildren(QtWidgets.QLabel))
+    assert "골리앗 투구" in texts and "HP" in texts
+    pop = InfoPopup(GD, "operator", "仇白")
+    texts = " ".join(l.text() for l in pop.findChildren(QtWidgets.QLabel))
+    assert "획득 시" in texts                          # 한국어 특질
+
+
+def test_info_button_does_not_toggle(panel):
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+    from stronghold_overlay.pickers import info_rect
+    lst = panel.ops.list
+    panel.ops.resize(900, 500)
+    lst._fit()
+    idx = lst.model().index(0, 0)
+    opt = QtWidgets.QStyleOptionViewItem()
+    opt.rect = lst.visualRect(idx)
+    seen = []
+    panel.ops.delegate.info_clicked.connect(seen.append)
+    pos = QPointF(info_rect(opt.rect.adjusted(4, 4, -4, -4)).center())
+    ev = QMouseEvent(QEvent.MouseButtonRelease, pos, pos, Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+    assert panel.ops.delegate.editorEvent(ev, lst.model(), opt, idx) is True
+    assert seen == [idx.data(KEY)]
+
+
+def test_old_user_file_still_loads(tmp_path, monkeypatch):
+    f = tmp_path / "u.json"
+    f.write_text('{"enemy_notes": {"x": "y"}, "presets": {"阿米娅": {"operators": ["复奏"], "note": ""}}}', "utf-8")
+    monkeypatch.setattr(config, "USER_FILE", f)
+    s = config.load_settings()
+    assert s.presets["阿米娅"].operators == ["复奏"] and s.presets["阿米娅"].equipment == []
+
+
 def test_labels_follow_language(panel):
     i18n.set_language("en")
     assert GD.op_label("棘刺") == "Thorns" and GD.alliance_label("叙拉古") == "Siracusa"

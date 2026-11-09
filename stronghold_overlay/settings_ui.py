@@ -1,17 +1,17 @@
-"""설정 패널 — 게임 창 위에 뜨고, 바꾸는 즉시 저장·반영된다."""
+"""설정 패널 — 게임 창 위에 반투명으로 뜨고, 바꾸는 즉시 저장·반영된다."""
 from __future__ import annotations
 
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
-from PySide6.QtWidgets import (QButtonGroup, QComboBox, QFormLayout, QFrame, QHBoxLayout, QLabel,
-                               QLineEdit, QPlainTextEdit, QPushButton, QStackedWidget,
-                               QVBoxLayout, QWidget)
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
+from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QHBoxLayout,
+                               QLabel, QLineEdit, QPushButton, QSlider, QStackedWidget, QVBoxLayout,
+                               QWidget)
 
-from . import config
+from . import autostart, config, theme
 from .config import Preset
 from .gamedata import GameData
 from .i18n import LANGUAGES, tr
-from .pickers import AlliancePicker, OperatorPicker
+from .pickers import AlliancePicker, CardPicker
 
 
 def rule() -> QFrame:
@@ -21,30 +21,27 @@ def rule() -> QFrame:
 
 
 class SettingsPanel(QWidget):
-    """좌측 메뉴 + 우측 페이지. 저장 버튼 없이 변경 즉시 자동 저장."""
+    """상단 탭 + 페이지. 저장 버튼 없이 변경 즉시 자동 저장."""
     applied = Signal()             # 설정이 바뀜 → 오버레이 다시 그리기
     language_changed = Signal()    # 언어 변경 → 패널 다시 만들기
     manual_strategy = Signal(object)
 
-    PAGES = ("tab_operators", "tab_alliances", "tab_presets", "tab_notes", "tab_general")
+    PAGES = ("tab_operators", "tab_equipment", "tab_alliances", "tab_presets", "tab_general")
 
     def __init__(self, settings: config.Settings, gd: GameData, current_manual: str | None = None) -> None:
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
         self.settings, self.gd = settings, gd
-        self.setObjectName("Panel")
-        self.setAttribute(Qt.WA_StyledBackground)
+        self.setAttribute(Qt.WA_TranslucentBackground)   # 배경은 paintEvent에서 반투명으로
         self.resize(1000, 660)
         self._drag: QPoint | None = None
         self._save_timer = QTimer(self, singleShot=True, interval=300, timeout=self._save)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 12, 18, 16)
-        # 헤더 (드래그로 이동)
         head = QHBoxLayout()
-        self.header_title = QLabel(tr("settings_title"), objectName="Title")
-        head.addWidget(self.header_title)
-        self.saved = QLabel("", objectName="Muted")
+        head.addWidget(QLabel(tr("settings_title"), objectName="Title"))
         head.addStretch(1)
+        self.saved = QLabel("", objectName="Muted")
         head.addWidget(self.saved)
         close = QPushButton("✕", objectName="Close")
         close.setToolTip(tr("close_hint"))
@@ -53,13 +50,12 @@ class SettingsPanel(QWidget):
         root.addLayout(head)
         root.addWidget(rule())
 
-        # 상단 탭 (참고 사이트의 '干员 | 装备 | 自选干员' 형태)
         tabs = QHBoxLayout()
         tabs.setSpacing(0)
         self.nav = QButtonGroup(self)
         self.stack = QStackedWidget()
-        builders = (self._page_operators, self._page_alliances, self._page_presets,
-                    self._page_notes, lambda: self._page_general(current_manual))
+        builders = (self._page_operators, self._page_equipment, self._page_alliances,
+                    self._page_presets, lambda: self._page_general(current_manual))
         for i, (key, build) in enumerate(zip(self.PAGES, builders)):
             b = QPushButton(tr(key), objectName="Tab", checkable=True)
             self.nav.addButton(b, i)
@@ -77,35 +73,48 @@ class SettingsPanel(QWidget):
 
         QShortcut(QKeySequence(Qt.Key_Escape), self, self.close)
 
+    # ---------- 반투명 배경 ----------
+    def paintEvent(self, _):
+        p = QPainter(self)
+        bg = QColor(theme.PAGE)
+        bg.setAlpha(int(255 * self.settings.panel_opacity / 100))
+        p.fillRect(self.rect(), bg)
+        p.setPen(QPen(QColor(theme.RULE), 1))
+        p.drawRect(self.rect().adjusted(0, 0, -1, -1))
+
     # ---------- 페이지 ----------
-    def _page(self, title: str, hint: str, counter: QWidget | None = None) -> tuple[QWidget, QVBoxLayout]:
+    def _page(self, hint: str, counter: QWidget | None = None) -> tuple[QWidget, QVBoxLayout]:
         w = QWidget()
         lay = QVBoxLayout(w)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
         head = QHBoxLayout()
-        left = QVBoxLayout()
-        left.setSpacing(2)
-        if hint:
-            h = QLabel(hint, objectName="Hint")
-            h.setWordWrap(True)
-            left.addWidget(h)
-        head.addLayout(left, 1)
+        h = QLabel(hint, objectName="Hint")
+        h.setWordWrap(True)
+        head.addWidget(h, 1)
         if counter is not None:
             head.addWidget(counter, 0, Qt.AlignBottom)
         lay.addLayout(head)
         return w, lay
 
     def _page_operators(self) -> QWidget:
-        self.ops = OperatorPicker(self.gd)
-        w, lay = self._page(tr("tab_operators"), tr("ops_hint"), self.ops.count)
+        self.ops = CardPicker(self.gd, "operator")
         self.ops.set_checked(self.settings.base_operators)
         self.ops.changed.connect(lambda v: self._set("base_operators", v))
+        w, lay = self._page(tr("ops_hint"), self.ops.count)
         lay.addWidget(self.ops, 1)
         return w
 
+    def _page_equipment(self) -> QWidget:
+        self.items = CardPicker(self.gd, "equipment")
+        self.items.set_checked(self.settings.base_equipment)
+        self.items.changed.connect(lambda v: self._set("base_equipment", v))
+        w, lay = self._page(tr("items_hint"), self.items.count)
+        lay.addWidget(self.items, 1)
+        return w
+
     def _page_alliances(self) -> QWidget:
-        w, lay = self._page(tr("tab_alliances"), tr("alliances_hint"))
+        w, lay = self._page(tr("alliances_hint"))
         self.als = AlliancePicker(self.gd)
         self.als.set_checked(self.settings.base_alliances)
         self.als.changed.connect(lambda v: self._set("base_alliances", v))
@@ -113,23 +122,21 @@ class SettingsPanel(QWidget):
         return w
 
     def _page_presets(self) -> QWidget:
-        w, lay = self._page(tr("tab_presets"), tr("preset_hint"))
-        row = QHBoxLayout()
+        w, lay = self._page(tr("preset_hint"))
         self.strat = QComboBox()
         self.strat.setEditable(True)            # 입력해서 찾기
         self.strat.setInsertPolicy(QComboBox.NoInsert)
         self.strat.lineEdit().setPlaceholderText(tr("strategy_search"))
         for s in self.gd.raw["strategies"]:
             self.strat.addItem("", s["leader"])
-        row.addWidget(self.strat, 1)
-        lay.addLayout(row)
+        lay.addWidget(self.strat)
         self.strat_effect = QLabel(objectName="Hint")
         self.strat_effect.setWordWrap(True)
         lay.addWidget(self.strat_effect)
 
         tabs = QHBoxLayout()
         self.p_tab = QButtonGroup(self)
-        for i, key in enumerate(("operators", "alliances")):
+        for i, key in enumerate(("operators", "equipment", "alliances")):
             b = QPushButton(tr(key), checkable=True)
             self.p_tab.addButton(b, i)
             tabs.addWidget(b)
@@ -140,41 +147,25 @@ class SettingsPanel(QWidget):
         tabs.addWidget(self.p_note, 2)
         lay.addLayout(tabs)
         self.p_stack = QStackedWidget()
-        self.p_ops = OperatorPicker(self.gd)
+        self.p_ops = CardPicker(self.gd, "operator")
+        self.p_items = CardPicker(self.gd, "equipment")
         self.p_als = AlliancePicker(self.gd)
-        self.p_stack.addWidget(self.p_ops)
-        self.p_stack.addWidget(self.p_als)
+        for wdg in (self.p_ops, self.p_items, self.p_als):
+            self.p_stack.addWidget(wdg)
         self.p_tab.idClicked.connect(self.p_stack.setCurrentIndex)
         self.p_tab.button(0).setChecked(True)
         lay.addWidget(self.p_stack, 1)
 
         self._cur: str | None = None
         self.strat.currentIndexChanged.connect(self._load_preset)
-        self.p_ops.changed.connect(self._store_preset)
-        self.p_als.changed.connect(self._store_preset)
-        self.p_note.textChanged.connect(self._store_preset)
+        for sig in (self.p_ops.changed, self.p_items.changed, self.p_als.changed, self.p_note.textChanged):
+            sig.connect(self._store_preset)
         self._label_strategies()
         self._load_preset(0)
         return w
 
-    def _page_notes(self) -> QWidget:
-        w, lay = self._page(tr("tab_notes"), tr("notes_hint"))
-        self.boss = QComboBox()
-        for b in self.gd.raw["bosses"]:
-            self.boss.addItem(b, b)
-        lay.addWidget(self.boss)
-        self.boss_note = QPlainTextEdit()
-        self.boss_note.setPlaceholderText(tr("note_placeholder"))
-        lay.addWidget(self.boss_note, 1)
-        self._boss_cur = None
-        self.boss.currentIndexChanged.connect(self._load_note)
-        self.boss_note.textChanged.connect(self._store_note)
-        self._label_bosses()
-        self._load_note(0)
-        return w
-
     def _page_general(self, current_manual: str | None) -> QWidget:
-        w, lay = self._page(tr("tab_general"), "")
+        w, lay = self._page("")
         f = QFormLayout()
         f.setLabelAlignment(Qt.AlignLeft)
         f.setSpacing(12)
@@ -194,19 +185,38 @@ class SettingsPanel(QWidget):
         self.manual.currentIndexChanged.connect(lambda i: self.manual_strategy.emit(self.manual.itemData(i)))
         f.addRow(tr("strategy_pick"), self.manual)
 
-        self.title = QLineEdit(self.settings.window_title)
-        self.title.textChanged.connect(lambda t: self._set("window_title", t.strip() or "明日方舟"))
-        f.addRow(tr("window_title"), self.title)
+        self.opacity = QSlider(Qt.Horizontal, minimum=50, maximum=100, value=self.settings.panel_opacity)
+        self.opacity.valueChanged.connect(self._opacity_changed)
+        f.addRow(tr("opacity"), self.opacity)
+
+        self.notify = QCheckBox(tr("notify_desc"))
+        self.notify.setChecked(self.settings.notify)
+        self.notify.toggled.connect(lambda v: self._set("notify", v))
+        f.addRow(tr("notify"), self.notify)
+
+        self.autostart = QCheckBox(tr("autostart_desc"))
+        self.autostart.setEnabled(autostart.supported())
+        self.autostart.setChecked(autostart.is_enabled())
+        self.autostart.toggled.connect(autostart.set_enabled)
+        f.addRow(tr("autostart"), self.autostart)
+
+        f.addRow(tr("hotkeys"), QLabel(tr("hotkeys_desc", s=self.settings.hotkey_settings,
+                                          o=self.settings.hotkey_toggle), objectName="Muted"))
+
         self.interval = QComboBox()
         for ms, key in ((400, "speed_fast"), (700, "speed_normal"), (1200, "speed_slow")):
             self.interval.addItem(tr(key, ms=ms), ms)
         cur = self.interval.findData(self.settings.interval_ms)
-        if cur < 0:   # 직접 넣은 값도 보존
+        if cur < 0:
             self.interval.addItem(f"{self.settings.interval_ms} ms", self.settings.interval_ms)
             cur = self.interval.count() - 1
         self.interval.setCurrentIndex(cur)
         self.interval.currentIndexChanged.connect(lambda i: self._set("interval_ms", self.interval.itemData(i)))
         f.addRow(tr("interval"), self.interval)
+
+        self.title = QLineEdit(self.settings.window_title)
+        self.title.textChanged.connect(lambda t: self._set("window_title", t.strip() or "明日方舟"))
+        f.addRow(tr("window_title"), self.title)
         lay.addLayout(f)
         lay.addStretch(1)
         return w
@@ -236,49 +246,33 @@ class SettingsPanel(QWidget):
         self._cur = None
         p = self.settings.presets.get(self._preset_key(leader))
         self.p_ops.set_checked(p.operators if p else [])
+        self.p_items.set_checked(p.equipment if p else [])
         self.p_als.set_checked(p.alliances if p else [])
         self.p_note.setText(p.note if p else "")
-        t = self.gd.strategy_label(self.gd.strategy(leader))
-        self.strat_effect.setText(t["effect"])
+        self.strat_effect.setText(self.gd.strategy_label(self.gd.strategy(leader))["effect"])
         self._cur = leader
 
     def _store_preset(self, *_):
         if not self._cur:
             return
         key = self._preset_key(self._cur)
-        ops, als, note = self.p_ops.checked(), self.p_als.checked(), self.p_note.text().strip()
-        if ops or als or note:
-            self.settings.presets[key] = Preset(key, ops, als, note)
+        ops, items, als = self.p_ops.checked(), self.p_items.checked(), self.p_als.checked()
+        note = self.p_note.text().strip()
+        if ops or items or als or note:
+            self.settings.presets[key] = Preset(key, ops, items, als, note)
         else:
             self.settings.presets.pop(key, None)
         self._label_strategies()
         self._changed()
 
-    # ---------- 보스 메모 ----------
-    def _label_bosses(self) -> None:
-        for i in range(self.boss.count()):
-            b = self.boss.itemData(i)
-            self.boss.setItemText(i, ("● " if b in self.settings.enemy_notes else "") + b)
-
-    def _load_note(self, idx: int) -> None:
-        self._boss_cur = None
-        self.boss_note.setPlainText(self.settings.enemy_notes.get(self.boss.itemData(idx), ""))
-        self._boss_cur = self.boss.itemData(idx)
-
-    def _store_note(self) -> None:
-        if not self._boss_cur:
-            return
-        t = self.boss_note.toPlainText().strip()
-        if t:
-            self.settings.enemy_notes[self._boss_cur] = t
-        else:
-            self.settings.enemy_notes.pop(self._boss_cur, None)
-        self._label_bosses()
-        self._changed()
-
     # ---------- 저장 ----------
     def _set(self, attr: str, value) -> None:
         setattr(self.settings, attr, value)
+        self._changed()
+
+    def _opacity_changed(self, v: int) -> None:
+        self.settings.panel_opacity = v
+        self.update()
         self._changed()
 
     def _changed(self) -> None:

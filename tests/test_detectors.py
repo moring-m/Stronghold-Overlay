@@ -24,14 +24,10 @@ def test_match_info_banned_by_icon_color():
     frame[220:270, 160:215] = (170, 200, 40)            # 炎 아이콘 청록(BGR)
     boxes = [tb("核心盟约", 130, 132, 90), tb("炎", 178, 290, 20),
              tb("维多利亚", 565, 290, 70), tb("请选择一组", 200, 175, 300),
-             tb("敌方领袖", 1055, 318, 80), tb("假想敌：", 1052, 348, 110),
-             tb("特训敌人·飞行", 1058, 437, 120)]
+             ]
     m = parse_match_info(boxes, frame, GD)
     assert m.active_alliances == ["炎"]
     assert m.banned_alliances == ["维多利亚"]
-    assert m.boss == "假想敌："
-    assert "假想敌：铳" in GD.boss_candidates(m.boss)
-    assert GD.special_group(m.special_enemies[0])[0] == "飞行"
 
 
 def test_shop_names_only():
@@ -39,6 +35,17 @@ def test_shop_names_only():
              tb("叙拉古", 760, 670), tb("忍冬", 760, 712), tb("3", 735, 545, 15)]
     shop = parse_shop(boxes, GD)
     assert [(c.slot, c.operator) for c in shop] == [(2, "Sharp"), (3, "忍冬")]
+
+
+def test_shop_equipment_and_hidden():
+    from stronghold_overlay.detectors import update_state
+    from stronghold_overlay.models import GameState
+    st = GameState()
+    battle = [tb("冻结", 1120, 505), tb("刷新", 1270, 505), tb("歌利亚头盔", 300, 712, 80)]
+    update_state(st, battle, None, GD)
+    assert [c.operator for c in st.shop] == ["歌利亚头盔"]       # 장비 이름도 인식
+    update_state(st, [tb("休息一下", 660, 25)], None, GD)         # 상점이 사라지면
+    assert st.shop == []                                          # 표시할 카드도 비움
 
 
 def test_strategy_name():

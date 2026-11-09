@@ -19,8 +19,6 @@ STRATEGY_PANEL_X = 0.75
 INFO_LEFT_PANEL_MAX_X = 0.68
 ICON_OFFSET_Y = 0.075
 ICON_RADIUS = 0.025
-BOSS_PORTRAIT = (0.69, 0.40, 0.785, 0.57)   # x0, y0, x1, y1 (敌方领袖 왼쪽 초상화)
-BOSS_MATCH_MIN = 0.97
 
 def classify_screen(boxes: list[TextBox]) -> Screen:
     texts = " ".join(b.text for b in boxes)
@@ -58,40 +56,7 @@ def parse_match_info(boxes: list[TextBox], frame: np.ndarray | None, gd: GameDat
                 target = info.active_alliances if icon_is_active(frame, b) else info.banned_alliances
                 if name not in target:
                     target.append(name)
-        if "特训敌人" in b.text:
-            info.special_enemies.append(b.text.strip())
-
-    leader = next((b for b in boxes if "敌方领袖" in b.text), None)
-    if leader:
-        cands = [b for b in boxes if b is not leader and 0 < b.y - leader.y < 0.1
-                 and b.x >= leader.x - 0.03]
-        if cands:
-            info.boss = min(cands, key=lambda b: b.y).text.strip()
-    if frame is not None and gd.boss_portraits:
-        m = match_boss(frame, gd)
-        if m and m[1] >= BOSS_MATCH_MIN:
-            info.boss = m[0]
     return info
-
-
-def match_boss(frame: np.ndarray, gd: GameData) -> tuple[str, float] | None:
-    """보스 초상화를 PRTS 이미지와 템플릿 매칭 (OCR이 '铳' 같은 글자를 못 읽어서)."""
-    import cv2
-    h, w = frame.shape[:2]
-    x0, y0, x1, y1 = BOSS_PORTRAIT
-    region = cv2.cvtColor(frame[int(y0 * h):int(y1 * h), int(x0 * w):int(x1 * w)], cv2.COLOR_BGR2GRAY)
-    side = min(region.shape)
-    best: tuple[str, float] | None = None
-    for name, img in gd.boss_portraits.items():
-        # 초상화는 영역 높이의 약 47~78% 크기 → 여러 크기로 시도
-        for size in range(int(side * 0.47), int(side * 0.78), max(2, side // 32)):
-            t = cv2.resize(img, (size, size), interpolation=cv2.INTER_AREA)
-            tg = cv2.cvtColor(t[..., :3], cv2.COLOR_BGR2GRAY)
-            mask = (t[..., 3] > 128).astype(np.uint8)
-            score = float(np.nanmax(cv2.matchTemplate(region, tg, cv2.TM_CCORR_NORMED, mask=mask)))
-            if best is None or score > best[1]:
-                best = (name, score)
-    return best
 
 
 # ---------- 2/3 전략 선택 ----------
@@ -138,6 +103,8 @@ def update_state(state: GameState, boxes: list[TextBox], frame: np.ndarray | Non
         found = detect_strategy(boxes)  # 화면을 떠나기 전 마지막 값 = 확정 전략
         if found:
             state.strategy = found
-    elif screen is Screen.BATTLE:
+    if screen is Screen.BATTLE:
         state.shop = parse_shop(boxes, gd)
+    else:
+        state.shop = []       # 상점이 안 보이면 표시도 지움
     return state

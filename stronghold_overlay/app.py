@@ -1,70 +1,93 @@
 """시스템 트레이에서 실행되는 오버레이 앱."""
 from __future__ import annotations
 
+import copy
+import logging
 import sys
 import threading
 import time
+import traceback
 
-from PySide6.QtCore import QObject, QPoint, QRect, Qt, Signal
-from PySide6.QtGui import QAction, QActionGroup, QColor, QFont, QIcon, QPainter, QPen, QPixmap, QPolygon
-from PySide6.QtWidgets import QApplication, QMenu, QPushButton, QSystemTrayIcon, QWidget
+from PySide6.QtCore import QObject, QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QActionGroup, QColor, QGuiApplication, QIcon, QPainter, QPen
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
+from PySide6.QtWidgets import QApplication, QLabel, QMenu, QPushButton, QSystemTrayIcon, QWidget
 
-from . import config, theme
-from .capture import Capturer, find_window
+from . import capture, config, theme
 from .detectors import SHOP_STEP, SHOP_W, SHOP_X0, SHOP_Y_TOP, update_state
 from .gamedata import GameData
+from .hotkeys import Hotkeys
 from .i18n import LANGUAGES, set_language, tr
 from .models import GameState, Screen
 from .settings_ui import SettingsPanel
 
+log = logging.getLogger("stronghold_overlay")
 YELLOW = QColor(255, 210, 0)
+INSTANCE_KEY = "StrongholdOverlay-single-instance"
+
+
+def setup_logging() -> None:
+    path = config.USER_FILE.parent / "overlay.log"
+    logging.basicConfig(filename=path, level=logging.INFO, encoding="utf-8",
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+    def hook(t, v, tb):
+        log.error("처리되지 않은 오류:\n%s", "".join(traceback.format_exception(t, v, tb)))
+    sys.excepthook = hook
 
 
 def app_icon() -> QIcon:
-    """assets/icon.png (없으면 직접 그림)."""
-    path = config.ROOT / "assets" / "icon.png"
-    if path.exists():
-        return QIcon(str(path))
-    pm = QPixmap(64, 64)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing)
-    p.setBrush(QColor(theme.PAGE))
-    p.setPen(QPen(QColor(theme.ACCENT), 4))
-    p.drawPolygon(QPolygon([QPoint(32, 4), QPoint(60, 32), QPoint(32, 60), QPoint(4, 32)]))
-    p.setBrush(QColor(theme.ACCENT))
-    p.setPen(Qt.NoPen)
-    p.drawPolygon(QPolygon([QPoint(32, 20), QPoint(44, 32), QPoint(32, 44), QPoint(20, 32)]))
-    p.end()
-    return QIcon(pm)
+    return QIcon(str(config.ROOT / "assets" / "icon.png"))
+
+
+def to_logical(rect: tuple[int, int, int, int]) -> QRect:
+    """Win32 물리 픽셀 → Qt 논리 좌표 (Windows 배율 125% 등에서 위치가 어긋나지 않게)."""
+    x, y, w, h = rect
+    for s in QGuiApplication.screens():
+        g, dpr = s.geometry(), s.devicePixelRatio()
+        native = QRect(g.x(), g.y(), int(g.width() * dpr), int(g.height() * dpr))
+        if native.contains(QPoint(x + w // 2, y + h // 2)):
+            return QRect(g.x() + round((x - g.x()) / dpr), g.y() + round((y - g.y()) / dpr),
+                         round(w / dpr), round(h / dpr))
+    return QRect(x, y, w, h)
 
 
 class Worker(QObject):
-    """백그라운드: 캡처 → OCR → 상태 갱신."""
-    updated = Signal(object, object)  # GameState, rect | None
+    """백그라운드: 캡처 → OCR → 상태 갱신. 상태 사본을 GUI로 보낸다."""
+    updated = Signal(object)  # GameState
 
     def __init__(self, settings: config.Settings, gd: GameData) -> None:
         super().__init__()
         self.settings, self.gd = settings, gd
         self.state = GameState()
+        self.rect: tuple[int, int, int, int] | None = None   # GUI 쪽 추적 타이머가 갱신
+        self.paused = False
         self._stop = False
 
     def run(self) -> None:
-        from .ocr import Ocr
-        ocr, cap = Ocr(), Capturer()
+        try:
+            from .ocr import Ocr
+            ocr, cap = Ocr(), capture.Capturer()
+        except Exception:
+            log.exception("OCR 초기화 실패")
+            return
         tick = 0
         while not self._stop:
-            tick += 1
-            rect = find_window(self.settings.window_title)
-            if rect and rect[2] > 100:
-                frame = cap.grab(rect)
-                shop = (ocr.read_shop(frame, self.gd)
-                        if self.state.screen is Screen.BATTLE and tick % 5 else None)
-                if shop:
-                    self.state.shop = shop
-                else:
-                    update_state(self.state, ocr.read(frame), frame, self.gd)
-            self.updated.emit(self.state, rect if rect and rect[2] > 100 else None)
+            rect = self.rect
+            if rect and not self.paused:
+                tick += 1
+                try:
+                    frame = cap.grab(rect)
+                    # 상점 단계: 카드 이름 칸만 빠르게. 5번에 1번은 전체 화면으로 화면 전환 확인.
+                    if self.state.screen is Screen.BATTLE and tick % 5:
+                        self.state.shop = ocr.read_shop(frame, self.gd)
+                        if not self.state.shop:   # 상점이 접혔거나 화면이 바뀜 → 바로 전체 판별
+                            update_state(self.state, ocr.read(frame), frame, self.gd)
+                    else:
+                        update_state(self.state, ocr.read(frame), frame, self.gd)
+                    self.updated.emit(copy.deepcopy(self.state))
+                except Exception:
+                    log.exception("인식 중 오류")
             time.sleep(self.settings.interval_ms / 1000)
 
     def stop(self) -> None:
@@ -72,12 +95,13 @@ class Worker(QObject):
 
 
 class Overlay(QWidget):
-    """게임 창 위의 투명·클릭 통과 표시층."""
+    """게임 창 위의 투명·클릭 통과 층: 상점의 선호 카드에 노란 테두리만 그린다."""
 
     def __init__(self, settings: config.Settings, gd: GameData) -> None:
         super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
-                         | Qt.WindowTransparentForInput)
+                         | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
         self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.settings, self.gd = settings, gd
         self.state = GameState()
         self.manual_strategy: str | None = None
@@ -86,94 +110,66 @@ class Overlay(QWidget):
     def strategy(self) -> dict | None:
         return self.gd.strategy(self.manual_strategy or self.state.strategy)
 
-    def preferred(self) -> tuple[set[str], set[str], str]:
+    def preset_key(self) -> str | None:
         s = self.strategy
         keys = [k for k in (s and s["leader"], s and s["name"], self.state.strategy) if k]
-        return self.settings.preferred(next((k for k in keys if k in self.settings.presets), None))
+        return next((k for k in keys if k in self.settings.presets), None)
 
-    def info_lines(self) -> list[str]:
-        gd = self.gd
-        ops, alliances, note = self.preferred()
-        s, st = self.state, self.strategy
-        lines = []
-        if st:
-            t = gd.strategy_label(st)
-            lines.append(tr("ov_strategy", l=t["leader"], n=t["name"], hp=st["hp"]))
-            lines.append("  " + t["effect"].replace("\n", " ")[:70])
-        elif s.strategy:
-            lines.append(tr("ov_strategy_unknown", l=s.strategy))
-        if note:
-            lines.append(tr("ov_note", t=note))
+    def preferred(self) -> tuple[set[str], set[str], str]:
+        return self.settings.preferred(self.preset_key())
 
-        m = s.match
-        al = gd.alliance_label
-        if m.banned_alliances:
-            lines.append(tr("ov_banned", x=", ".join(al(a) for a in m.banned_alliances)))
-            hit = sorted(alliances & set(m.banned_alliances))
-            if hit:
-                lines.append(tr("ov_banned_pref", x=", ".join(al(a) for a in hit)))
-            banned_ops = sorted(o for o in ops
-                                if set(gd.operators.get(o, {}).get("alliances", [])) & set(m.banned_alliances))
-            if banned_ops:
-                lines.append(tr("ov_banned_ops", x=", ".join(gd.op_label(o) for o in banned_ops)))
-        if m.boss:
-            bosses = gd.boss_candidates(m.boss)
-            if len(bosses) == 1:
-                lines.append(tr("ov_boss", b=bosses[0], n=config.lookup_note(self.settings.enemy_notes, bosses[0])))
-            else:
-                lines.append(tr("ov_boss_multi", b=m.boss, c="、".join(bosses)))
-        for e in m.special_enemies:
-            g = gd.special_group(e)
-            if g:
-                lines.append(tr("ov_special", g=gd.special_label(g[0]),
-                                e="、".join(g[1][:6]) + (tr("ov_more") if len(g[1]) > 6 else "")))
-            else:
-                lines.append(tr("ov_special", g="?", e=e))
-        return lines
+    def highlighted(self) -> list[int]:
+        """노란 테두리를 그릴 상점 칸 번호."""
+        if self.state.screen is not Screen.BATTLE:
+            return []
+        names, _, _ = self.preferred()
+        return [c.slot for c in self.state.shop if c.operator in names]
 
     def paintEvent(self, _):
         p = QPainter(self)
         w, h = self.width(), self.height()
-        ops, _, _ = self.preferred()
-        if self.state.screen is Screen.BATTLE:
-            p.setPen(QPen(YELLOW, 4))
-            for c in self.state.shop:
-                if c.operator in ops:
-                    x = int((SHOP_X0 + c.slot * SHOP_STEP) * w)
-                    p.drawRect(x, int(SHOP_Y_TOP * h), int(SHOP_W * w), int((0.99 - SHOP_Y_TOP) * h))
-        lines = self.info_lines()
-        if not lines:
-            return
-        f = QFont()
-        f.setPixelSize(13)
-        p.setFont(f)
-        lh = 20
-        box = QRect(10, int(h * 0.12), int(w * 0.36), lh * len(lines) + 14)
-        p.fillRect(box, QColor(8, 21, 25, 200))
-        p.setPen(QPen(QColor(theme.RULE), 1))
-        p.drawRect(box.adjusted(0, 0, -1, -1))
-        p.fillRect(QRect(box.x(), box.y(), 3, box.height()), QColor(theme.ACCENT))
-        p.setPen(QColor(theme.INK))
-        for i, line in enumerate(lines):
-            p.drawText(box.x() + 12, box.y() + 20 + i * lh, line)
+        p.setPen(QPen(YELLOW, max(3, w // 400)))
+        for slot in self.highlighted():
+            x = int((SHOP_X0 + slot * SHOP_STEP) * w)
+            p.drawRect(x, int(SHOP_Y_TOP * h), int(SHOP_W * w), int((0.99 - SHOP_Y_TOP) * h))
+
+
+class Toast(QLabel):
+    """게임 창 위쪽 가운데에 잠깐 뜨는 알림."""
+
+    def __init__(self) -> None:
+        super().__init__(None, Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+                         | Qt.WindowTransparentForInput | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
+        self.setStyleSheet(f"QLabel {{ background: rgba(8,21,25,225); color: {theme.INK}; border: 1px solid "
+                           f"{theme.RULE}; border-left: 3px solid {theme.ACCENT}; padding: 8px 16px; "
+                           f"font-size: 14px; }}")
+        self._timer = QTimer(self, singleShot=True, timeout=self.hide)
+
+    def show_message(self, text: str, game: QRect | None, warn: bool = False) -> None:
+        self.setText(("⚠ " if warn else "") + text)
+        self.adjustSize()
+        area = game or QGuiApplication.primaryScreen().availableGeometry()
+        self.move(area.x() + (area.width() - self.width()) // 2, area.y() + int(area.height() * 0.08))
+        self.show()
+        self._timer.start(3500)
 
 
 class GearButton(QPushButton):
-    """게임 창 오른쪽 아래 구석의 작은 설정 버튼 (오버레이는 클릭이 통과하므로 별도 창)."""
+    """게임 창 오른쪽 가장자리의 작은 설정 버튼 (오버레이는 클릭이 통과하므로 별도 창)."""
 
     def __init__(self) -> None:
         super().__init__("⚙", None)
-        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus)
+        self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setFixedSize(30, 30)
         self.setCursor(Qt.PointingHandCursor)
-        self.setStyleSheet(f"QPushButton {{ background: {theme.PANEL}; color: {theme.ACCENT}; border: 1px solid "
+        self.setStyleSheet(f"QPushButton {{ background: rgba(13,32,35,200); color: {theme.ACCENT}; border: 1px solid "
                            f"{theme.RULE}; font-size: 16px; padding: 0; }} QPushButton:hover {{ border-color: "
-                           f"{theme.ACCENT}; }}")
+                           f"{theme.ACCENT}; background: {theme.PANEL}; }}")
 
-    def place(self, rect) -> None:
-        x, y, w, h = rect
-        # 오른쪽 위 카운트다운/버튼과 겹치지 않도록 오른쪽 가장자리 세로 중앙보다 조금 위
-        self.move(x + w - self.width() - 4, y + int(h * 0.40))
+    def place(self, r: QRect) -> None:
+        self.move(r.right() - self.width() - 4, r.top() + int(r.height() * 0.40))
 
 
 class App(QObject):
@@ -183,30 +179,45 @@ class App(QObject):
         self.settings = config.load_settings()
         set_language(self.settings.language)
         self.gd = GameData.load()
-        self.rect = None
+        self.hwnd: int | None = None
+        self.game: QRect | None = None
         self.panel: SettingsPanel | None = None
+        self.enabled = True
+        self._last_strategy = None
+        self._last_bans: tuple = ()
 
         self.overlay = Overlay(self.settings, self.gd)
         self.gear = GearButton()
+        self.gear.setToolTip(tr("gear_tip"))
         self.gear.clicked.connect(self.open_settings)
+        self.toast = Toast()
 
         self.tray = QSystemTrayIcon(app_icon(), self)
         self.tray.activated.connect(self._tray_activated)
         self._build_menu()
         self.tray.show()
-        self.tray.showMessage(tr("app_title"), tr("tray_started"), app_icon(), 4000)
+        self.tray.showMessage(tr("app_title"), tr("tray_started", s=self.settings.hotkey_settings),
+                              app_icon(), 4000)
+
+        self.hotkeys = Hotkeys({"settings": self.settings.hotkey_settings, "toggle": self.settings.hotkey_toggle})
+        self.hotkeys.triggered.connect(self._hotkey)
 
         self.worker = Worker(self.settings, self.gd)
-        self.worker.updated.connect(self.on_update)
+        self.worker.updated.connect(self.on_state)
         threading.Thread(target=self.worker.run, daemon=True).start()
-        qapp.aboutToQuit.connect(self.worker.stop)
+
+        # 창 위치/포커스는 OCR과 따로 자주 확인 (창을 옮겨도 바로 따라가게)
+        self.tracker = QTimer(self, interval=150, timeout=self._track)
+        self.tracker.start()
+        qapp.aboutToQuit.connect(self._shutdown)
 
     # ---- 트레이 ----
     def _build_menu(self) -> None:
         m = QMenu()
-        m.addAction(tr("tray_settings"), self.open_settings)
-        self.show_act = QAction(tr("tray_overlay"), m, checkable=True, checked=True)
-        self.show_act.toggled.connect(lambda _: self.on_update(self.overlay.state, self.rect))
+        m.addAction(f"{tr('tray_settings')}\t{self.settings.hotkey_settings}", self.open_settings)
+        self.show_act = QAction(f"{tr('tray_overlay')}\t{self.settings.hotkey_toggle}", m,
+                                checkable=True, checked=self.enabled)
+        self.show_act.toggled.connect(self.set_enabled)
         m.addAction(self.show_act)
         lang_menu = m.addMenu(tr("tray_language"))
         grp = QActionGroup(lang_menu)
@@ -215,36 +226,87 @@ class App(QObject):
             a.triggered.connect(lambda _=False, c=code: self.set_language(c))
             grp.addAction(a)
             lang_menu.addAction(a)
+        m.addAction(tr("tray_log"), self._open_log)
         m.addSeparator()
         m.addAction(tr("tray_quit"), self.qapp.quit)
-        old = self.tray.contextMenu()
         self.tray.setContextMenu(m)
-        self._menu = m  # 참조 유지
-        if old:
-            old.deleteLater()
-        self.tray.setToolTip(tr("app_title"))
+        self._menu = m
+        self._update_tooltip()
 
     def _tray_activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.DoubleClick, QSystemTrayIcon.Trigger):
             self.open_settings()
 
-    # ---- 상태 갱신 ----
-    def on_update(self, state: GameState, rect) -> None:
-        self.rect = rect
-        self.overlay.state = state
-        visible = bool(rect) and self.show_act.isChecked()
+    def _update_tooltip(self) -> None:
+        if not self.enabled:
+            status = tr("status_paused")
+        elif not self.hwnd:
+            status = tr("status_wait", t=self.settings.window_title)
+        else:
+            status = tr("status_ok", s=tr("screen_" + self.overlay.state.screen.value))
+        self.tray.setToolTip(f"{tr('app_title')}\n{status}")
+
+    def _open_log(self) -> None:
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(config.USER_FILE.parent)))
+
+    def _hotkey(self, name: str) -> None:
+        if name == "settings":
+            if self.panel and self.panel.isVisible():
+                self.panel.close()
+            else:
+                self.open_settings()
+        elif name == "toggle":
+            self.show_act.setChecked(not self.show_act.isChecked())
+
+    def set_enabled(self, on: bool) -> None:
+        self.enabled = on
+        self.worker.paused = not on      # 숨기면 인식도 멈춰 CPU 절약
+        self._track()
+
+    # ---- 창 추적 ----
+    def _track(self) -> None:
+        if not capture.is_alive(self.hwnd):
+            self.hwnd = capture.find_window(self.settings.window_title)
+        rect = capture.client_rect(self.hwnd) if self.hwnd else None
+        self.worker.rect = rect
+        self.game = to_logical(rect) if rect else None
+        visible = bool(self.game) and self.enabled and capture.is_foreground(self.hwnd)
         if visible:
-            self.overlay.setGeometry(QRect(*rect))
-            self.overlay.show()
-            self.overlay.update()
-            self.gear.place(rect)
-            self.gear.show()
-            self.gear.raise_()
+            if self.overlay.geometry() != self.game:
+                self.overlay.setGeometry(self.game)
+            if not self.overlay.isVisible():
+                self.overlay.show()
+            self.gear.place(self.game)
+            if not self.gear.isVisible():
+                self.gear.show()
         else:
             self.overlay.hide()
             self.gear.hide()
-        screen = tr("screen_" + state.screen.value) if rect else tr("status_wait", t=self.settings.window_title)
-        self.tray.setToolTip(f"{tr('app_title')}\n{screen}")
+            self.toast.hide()
+        self._update_tooltip()
+
+    # ---- 인식 결과 ----
+    def on_state(self, state: GameState) -> None:
+        self.overlay.state = state
+        self.overlay.update()
+        if not self.settings.notify:
+            return
+        key = self.overlay.preset_key()
+        if state.strategy and state.strategy != self._last_strategy:
+            self._last_strategy = state.strategy
+            if key:
+                t = self.gd.strategy_label(self.gd.strategy(key))
+                self.toast.show_message(tr("toast_preset", l=t["leader"], n=t["name"]), self.game)
+        _, alliances, _ = self.overlay.preferred()
+        bans = tuple(sorted(alliances & set(state.match.banned_alliances)))
+        if bans and bans != self._last_bans:
+            self.toast.show_message(tr("toast_banned", x=", ".join(self.gd.alliance_label(a) for a in bans)),
+                                    self.game, warn=True)
+        self._last_bans = bans
+        if state.screen is Screen.MATCH_INFO:
+            self._last_strategy = None   # 새 판
 
     # ---- 설정 패널 ----
     def open_settings(self) -> None:
@@ -254,22 +316,18 @@ class App(QObject):
             self.panel.manual_strategy.connect(self._set_manual)
             self.panel.language_changed.connect(lambda: self.set_language(self.settings.language))
             panel = self.panel
-            # 언어 변경으로 새 패널이 생긴 뒤 옛 패널의 destroyed가 와도 새 참조를 지우지 않게
             panel.destroyed.connect(lambda *_: self.panel is panel and setattr(self, "panel", None))
-            self.panel.setAttribute(Qt.WA_DeleteOnClose)
-            self._center_panel()
+            panel.setAttribute(Qt.WA_DeleteOnClose)
+            self._place_panel()
         self.panel.show()
         self.panel.raise_()
         self.panel.activateWindow()
 
-    def _center_panel(self) -> None:
-        if self.rect:      # 게임 창 가운데
-            x, y, w, h = self.rect
-            pw, ph = min(1000, max(760, int(w * 0.9))), min(660, max(520, int(h * 0.9)))
-            self.panel.setGeometry(x + (w - pw) // 2, y + (h - ph) // 2, pw, ph)
-        else:              # 게임이 없으면 화면 가운데
-            g = self.qapp.primaryScreen().availableGeometry()
-            self.panel.move(g.center() - self.panel.rect().center())
+    def _place_panel(self) -> None:
+        area = self.game or QGuiApplication.primaryScreen().availableGeometry()
+        pw = min(1040, max(760, int(area.width() * 0.86)))
+        ph = min(700, max(520, int(area.height() * 0.88)))
+        self.panel.setGeometry(area.x() + (area.width() - pw) // 2, area.y() + (area.height() - ph) // 2, pw, ph)
 
     def _set_manual(self, leader) -> None:
         self.overlay.manual_strategy = leader
@@ -280,35 +338,40 @@ class App(QObject):
         set_language(code)
         config.save_user_settings(self.settings)
         self._build_menu()
-        if self.panel is not None:   # 패널을 새 언어로 다시 만든다 (위치 유지)
+        self.gear.setToolTip(tr("gear_tip"))
+        if self.panel is not None:   # 새 언어로 다시 만든다 (위치 유지)
             geo = self.panel.geometry()
             self.panel.close()
             self.panel = None
             self.open_settings()
             self.panel.setGeometry(geo)
-        self.overlay.update()
+
+    def _shutdown(self) -> None:
+        self.worker.stop()
+        self.hotkeys.stop()
+        self.tray.hide()
 
 
 def selftest() -> int:
-    """패키징 확인용: 데이터, 번역, 초상화, OCR 모델이 실제로 로드되는지 검사하고 종료."""
+    """패키징 확인용: 데이터, 번역, 이미지, OCR 모델이 실제로 로드되는지 검사하고 종료."""
     import numpy as np
     from .ocr import Ocr
     gd = GameData.load()
     problems = []
-    if len(gd.operators) < 100:
-        problems.append(f"operators={len(gd.operators)}")
+    if len(gd.operators) < 100 or len(gd.equipment) < 50:
+        problems.append(f"operators={len(gd.operators)} equipment={len(gd.equipment)}")
     if not gd.names.get("ko"):
         problems.append("i18n missing")
-    missing = [n for n in gd.operators if not gd.avatar(n)]
-    if missing:
-        problems.append(f"avatars missing={len(missing)}")
-    if not gd.boss_portraits:
-        problems.append("boss portraits missing")
+    miss_av = [n for n in gd.operators if not gd.avatar(n)]
+    miss_it = [n for n in gd.equipment if not gd.item_icon(n)]
+    if miss_av or miss_it:
+        problems.append(f"images missing={len(miss_av) + len(miss_it)}")
+    if not (config.ROOT / "assets" / "icon.png").exists():
+        problems.append("icon missing")
     Ocr().read(np.zeros((90, 160, 3), np.uint8))
     result = "selftest: " + ("OK" if not problems else "FAIL " + ", ".join(problems))
-    # 창 모드 exe에는 stdout이 없으므로 파일로도 남긴다
     from pathlib import Path
-    Path("selftest.txt").write_text(result, "utf-8")
+    Path("selftest.txt").write_text(result, "utf-8")   # 창 모드 exe에는 stdout이 없음
     if sys.stdout:
         print(result)
     return 1 if problems else 0
@@ -317,13 +380,28 @@ def selftest() -> int:
 def main() -> None:
     if "--selftest" in sys.argv:
         sys.exit(selftest())
-    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
+    setup_logging()
     qapp = QApplication(sys.argv)
     qapp.setApplicationName("Stronghold Overlay")
     qapp.setQuitOnLastWindowClosed(False)   # 설정 창을 닫아도 트레이에 남음
     qapp.setWindowIcon(app_icon())
     qapp.setStyleSheet(theme.stylesheet())
+
+    # 이미 실행 중이면 그쪽 설정 창을 띄우고 종료
+    sock = QLocalSocket()
+    sock.connectToServer(INSTANCE_KEY)
+    if sock.waitForConnected(300):
+        sock.write(b"show")
+        sock.waitForBytesWritten(300)
+        return
+    QLocalServer.removeServer(INSTANCE_KEY)
+    server = QLocalServer()
+    server.listen(INSTANCE_KEY)
+
     if not QSystemTrayIcon.isSystemTrayAvailable():
-        print("System tray is not available.", file=sys.stderr)
-    qapp.main_app = App(qapp)  # 참조 유지
+        log.warning("시스템 트레이를 사용할 수 없음")
+    app = App(qapp)
+    server.newConnection.connect(lambda: (server.nextPendingConnection(), app.open_settings()))
+    qapp.main_app, qapp.instance_server = app, server   # 참조 유지
+    log.info("시작")
     sys.exit(qapp.exec())

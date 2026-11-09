@@ -1,10 +1,11 @@
 """번역(ko/en)과 오퍼레이터 초상화를 받아 저장.
 
-- ko: arknights1234.github.io (위수 협의: 규정 / act3autochess) — 오퍼레이터, 맹약, 전략
+- ko: arknights1234.github.io (위수 협의: 규정 / act3autochess) — 오퍼레이터, 특질, 맹약, 전략, 장비
       없는 이름은 공식 한국 서버 character_table 로 보충
 - en: 공식 글로벌 서버 character_table (ArknightsGameData_YoStar)
       글로벌 미출시 오퍼레이터는 PRTS '干员外文名'(라틴 문자일 때만)
-      맹약/특훈 분류 영어 이름은 이 파일의 표 (국가명은 공식 표기, 나머지는 비공식 번역)
+      맹약 영어 이름은 이 파일의 표 (국가명은 공식 표기, 나머지는 비공식 번역)
+      장비/특질의 영어 공식 번역은 없어 중국어로 표시
 - 초상화: PRTS 头像_<이름>.png → data/avatars/<이름>.png (96px)
 
 받아온 JS 파일은 실행하지 않고 텍스트로만 파싱한다.
@@ -43,13 +44,6 @@ ALLIANCE_EN = {
     "调和": "Harmony", "协防干员": "Joint Defense", "独行": "Lone Wolf", "绝技": "Ultimate",
     "聚合": "Convergence", "奥术": "Arcane",
 }
-SPECIAL = {  # 특훈 적 분류
-    "特异": ("특이", "Anomalous"), "飞行": ("비행", "Aerial"), "频次": ("빈도", "Hit-count"),
-    "元素": ("원소", "Elemental"), "持续": ("지속", "Sustained"), "隐匿": ("은닉", "Stealth"),
-    "折射": ("굴절", "Reflective"), "致命": ("치명", "Lethal"), "复苏": ("소생", "Revival"),
-}
-
-
 def fetch(url: str) -> bytes:
     last = None
     for i in range(6):
@@ -65,7 +59,7 @@ def fetch(url: str) -> bytes:
 
 def strip_html(s: str) -> str:
     s = re.sub(r"<br\s*/?>", "\n", s)
-    s = re.sub(r"<[^>]+>", "", s)
+    s = re.sub(r"</?[a-zA-Z][^>]*>", "", s)   # HTML 태그만 (<获得时> 같은 조건 표기는 유지)
     return s.replace("&lt;", "<").replace("&gt;", ">").strip()
 
 
@@ -98,11 +92,27 @@ def main() -> None:
 
     # ---- ko: arknights1234 ----
     ak = parse_js_object(fetch(AK1234).decode("utf-8"))
-    ko_ops = {}
+    ko_ops, ko_traits, ko_trait_types = {}, {}, {}
     for o in ak["operators"]:
         m = re.search(r"头像_(.+)\.webp", o.get("img", ""))
         if m:
             ko_ops[m.group(1)] = o["name"]
+            ko_traits[m.group(1)] = strip_html(o.get("traitDescription", ""))
+            zh_type = prts["operators"].get(m.group(1), {}).get("trait_type")
+            if zh_type and o.get("class"):
+                ko_trait_types[zh_type] = o["class"]   # 예: 持续叠加 → 지속 중첩
+
+    # 장비: PRTS와 같은 순서 (단계로 검증)
+    zh_items = list(prts.get("equipment", {}))
+    ko_items, ko_item_eff = {}, {}
+    if len(ak.get("tools", [])) == len(zh_items):
+        for z, t in zip(zh_items, ak["tools"]):
+            if "ⅠⅡⅢⅣⅤⅥ"[int(t["stage"]) - 1] != prts["equipment"][z]["tier"]:
+                raise SystemExit(f"장비 순서 불일치: {z} / {t['name']}")
+            ko_items[z] = t["name"]
+            ko_item_eff[z] = strip_html(t.get("effect", ""))
+    else:
+        print("경고: 장비 개수가 PRTS와 달라 한국어 장비 이름을 건너뜁니다")
     zh_alliances = list(prts["alliances"])
     if len(ak["oaths"]) != len(zh_alliances):
         raise SystemExit("맹약 개수가 PRTS와 다릅니다 — 매핑 확인 필요")
@@ -145,13 +155,15 @@ def main() -> None:
                           if ko_ops.get(n) or official("ko", n)},
             "alliances": ko_alliances,
             "strategies": ko_strat,
-            "special": {k: v[0] for k, v in SPECIAL.items()},
+            "traits": ko_traits,
+            "trait_types": ko_trait_types,
+            "equipment": ko_items,
+            "equipment_effects": ko_item_eff,
         },
         "en": {
             "operators": en_ops,
             "alliances": ALLIANCE_EN,
             "strategies": en_strat,
-            "special": {k: v[1] for k, v in SPECIAL.items()},
         },
     }
     OUT.write_text(json.dumps(out, ensure_ascii=False, indent=1), "utf-8")

@@ -24,7 +24,7 @@ jobs:
       - name: Test
         env:
           QT_QPA_PLATFORM: offscreen
-        run: pytest -q
+        run: python -m pytest -q
       - name: Build
         run: pyinstaller --noconfirm StrongholdOverlay.spec
       - name: Self-test packaged app

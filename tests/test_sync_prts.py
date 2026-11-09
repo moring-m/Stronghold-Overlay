@@ -16,17 +16,18 @@ SAMPLE = """==S.W.E.E.P.盟约报告==
 |血量=25
 |效果={{color|#40B196|被动效果}}：说明
 }}
-==敌方资料==
-=== 领袖 ===
-| {{敌人头像|假想敌：铳|px=60}}<br>假想敌：铳
-=== 战术特训敌人 ===
-|-
-|style="color:white"|{{popup|图标=x|内容=y}}<br>飞行
-|{{敌人头像|妖怪|px=60}}{{敌人头像|威龙|px=60}}
-|}
 ==干员数据库==
 ! {{color|#c5c5c5|Ⅳ}}阶干员
-{{卫戍协议/参战干员|干员=仇白|原型=Sharp(卫戍协议)|盟约1=炎|盟约2=灵巧|特质1=a|特质2=b}}
+{{卫戍协议/参战干员|干员=仇白|原型=Sharp(卫戍协议)|盟约1=炎|盟约2=灵巧|特质类型=单次叠加|特质1=<获得时>a|特质2=b}}
+== 装备数据库 ==
+{{:卫戍协议/道具
+|类型=装备
+|等阶=2
+|名称=歌利亚头盔
+|售价=2
+|效果=【基础】生命+25%<br>{{color|#b78000|【进阶】生命+45%}}
+|描述=头盔。
+}}
 """
 
 
@@ -36,10 +37,10 @@ def test_parse_sample():
     assert d["alliances"]["炎"]["operators"] == ["仇白", "老鲤"]
     assert d["alliances"]["灵巧"]["type"] == "extra"
     assert d["strategies"][0]["name"] == "众志合一" and d["strategies"][0]["hp"] == "25"
-    assert d["bosses"] == ["假想敌：铳"]
-    assert d["special_enemies"] == {"飞行": ["妖怪", "威龙"]}
-    assert d["operators"]["仇白"] == {"tier": "Ⅳ", "prototype": "Sharp",
-                                     "alliances": ["炎", "灵巧"], "trait": "b"}
+    assert d["operators"]["仇白"] == {"tier": "Ⅳ", "prototype": "Sharp", "alliances": ["炎", "灵巧"],
+                                     "trait_type": "单次叠加", "trait": "<获得时>a", "trait_adv": "b"}
+    assert d["equipment"]["歌利亚头盔"] == {"tier": "Ⅱ", "price": "2", "effect": "生命+25%",
+                                         "effect_adv": "生命+45%", "desc": "头盔。"}
 
 
 def test_helpers():

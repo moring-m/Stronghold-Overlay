@@ -51,6 +51,12 @@ QScrollBar::handle:vertical {{ background: {RULE}; min-height: 30px; }}
 QScrollBar::handle:vertical:hover {{ background: {ACCENT}; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 QWidget#FilterBar {{ background: {PANEL}; border: 1px solid {RULE}; }}
+QWidget#Popup {{ background: rgba(13,32,35,245); border: 1px solid {ACCENT}; }}
+QLabel#Chip, QLabel#ChipCore {{ padding: 1px 6px; font-size: 11px; color: {MUTED}; border: 1px solid {MUTED}; }}
+QLabel#ChipCore {{ color: {SIGNAL}; border-color: {SIGNAL}; }}
+QSlider::groove:horizontal {{ height: 4px; background: {RULE}; }}
+QSlider::sub-page:horizontal {{ background: {ACCENT}; }}
+QSlider::handle:horizontal {{ width: 12px; margin: -6px 0; background: {INK}; border: 1px solid {ACCENT}; }}
 QToolTip {{ background: {PANEL}; color: {INK}; border: 1px solid {RULE}; }}
 QMenu {{ background: {PANEL}; border: 1px solid {RULE}; padding: 4px; }}
 QMenu::item {{ padding: 6px 22px; }}

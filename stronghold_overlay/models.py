@@ -34,8 +34,6 @@ class TextBox:
 class MatchInfo:
     active_alliances: list[str] = field(default_factory=list)
     banned_alliances: list[str] = field(default_factory=list)
-    boss: str | None = None
-    special_enemies: list[str] = field(default_factory=list)
 
 
 @dataclass

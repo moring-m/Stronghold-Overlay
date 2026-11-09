@@ -2,21 +2,8 @@
   "language": "ko",
   "window_title": "明日方舟",
   "interval_ms": 700,
-  "base_operators": [
-    "忍冬",
-    "Sharp"
-  ],
-  "base_alliances": [
-    "叙拉古"
-  ],
-  "presets": {
-    "阿米娅": {
-      "operators": [
-        "复奏"
-      ],
-      "alliances": [],
-      "note": ""
-    }
-  },
-  "enemy_notes": {}
+  "base_operators": [],
+  "base_equipment": [],
+  "base_alliances": [],
+  "presets": {}
 }
