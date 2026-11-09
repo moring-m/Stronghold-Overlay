@@ -12,6 +12,8 @@ from pathlib import Path
 
 DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "prts_stronghold.json"
 BOSS_DIR = DATA_FILE.parent / "bosses"
+AVATAR_DIR = DATA_FILE.parent / "avatars"
+I18N_FILE = DATA_FILE.parent / "i18n_names.json"
 
 
 @dataclass
@@ -23,6 +25,35 @@ class GameData:
         if not path.exists():
             return cls({"alliances": {}, "strategies": [], "bosses": [], "special_enemies": {}, "operators": {}})
         return cls(json.loads(path.read_text("utf-8")))
+
+    # ---- UI 언어 표기 (게임 데이터 키는 중국어 이름) ----
+    @cached_property
+    def names(self) -> dict:
+        return json.loads(I18N_FILE.read_text("utf-8")) if I18N_FILE.exists() else {}
+
+    def _label(self, kind: str, zh: str) -> str:
+        from .i18n import tr
+        return self.names.get(tr.lang, {}).get(kind, {}).get(zh) or zh
+
+    def op_label(self, zh: str) -> str:
+        return self._label("operators", zh)
+
+    def alliance_label(self, zh: str) -> str:
+        return self._label("alliances", zh)
+
+    def special_label(self, zh: str) -> str:
+        return self._label("special", zh)
+
+    def strategy_label(self, s: dict) -> dict:
+        """{'leader','name','effect'} 를 UI 언어로 (없는 항목은 중국어)."""
+        from .i18n import tr
+        t = self.names.get(tr.lang, {}).get("strategies", {}).get(s["leader"], {})
+        return {"leader": t.get("leader") or s["leader"], "name": t.get("name") or s["name"],
+                "effect": t.get("effect") or s["effect"].replace("被动效果：", "")}
+
+    def avatar(self, zh: str) -> Path | None:
+        p = AVATAR_DIR / f"{zh}.png"
+        return p if p.exists() else None
 
     @property
     def alliances(self) -> dict[str, dict]:

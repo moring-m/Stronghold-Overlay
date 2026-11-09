@@ -1,13 +1,26 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "data"
 PRESETS_FILE = DATA / "presets.json"
-USER_FILE = DATA / "user_settings.json"
+
+
+def _user_dir() -> Path:
+    """실행 파일(PyInstaller)로 실행 중이면 %APPDATA%\\StrongholdOverlay, 아니면 data/."""
+    if getattr(sys, "frozen", False):
+        base = Path(os.environ.get("APPDATA") or Path.home()) / "StrongholdOverlay"
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    return DATA
+
+
+USER_FILE = _user_dir() / "user_settings.json"
 
 
 @dataclass

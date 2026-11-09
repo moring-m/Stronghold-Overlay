@@ -3,3 +3,6 @@ __pycache__/
 .venv/
 data/user_settings.json
 debug/
+build/
+dist/
+selftest.txt
