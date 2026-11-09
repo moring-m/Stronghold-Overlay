@@ -4,8 +4,6 @@
 """
 from __future__ import annotations
 
-from typing import Iterable
-
 import numpy as np
 
 from .models import GameState, MatchInfo, Screen, ShopCard, TextBox
@@ -23,12 +21,13 @@ KNOWN_TAGS = [
     "精准", "灵巧", "迅捷",
 ]
 
+STRATEGY_PANEL_X = 0.75
 INFO_LEFT_PANEL_MAX_X = 0.68   # 맹약 패널 오른쪽 끝
 ICON_OFFSET_Y = 0.075          # 라벨 위 아이콘 중심까지 거리
 ICON_RADIUS = 0.025
 
 
-def classify_screen(boxes: Iterable[TextBox]) -> Screen:
+def classify_screen(boxes: list[TextBox]) -> Screen:
     texts = " ".join(b.text for b in boxes)
     if "确认本局信息" in texts or ("核心盟约" in texts and "附加盟约" in texts):
         return Screen.MATCH_INFO
@@ -98,40 +97,46 @@ def lookup_note(notes: dict[str, str], name: str) -> str:
     return ""
 
 
+def lookup_note(notes: dict[str, str], name: str) -> str:
+    """OCR이 희귀 한자를 놓쳐도(예: '假想敌：铳' -> '假想敌：') 메모를 찾는다."""
+    if name in notes:
+        return notes[name]
+    for k, v in notes.items():
+        if name and (k.startswith(name) or name.startswith(k)):
+            return v
+    return ""
+
+
 def parse_shop(boxes: list[TextBox]) -> list[ShopCard]:
+    """상점 카드 하단의 오퍼레이터 이름만 읽는다."""
     cards: dict[int, ShopCard] = {}
     for b in boxes:
-        if b.cy < SHOP_Y_TOP:
+        if b.cy < SHOP_NAME_Y or b.text.strip().isdigit():
             continue
         slot = int((b.cx - SHOP_X0) // SHOP_STEP)
-        if not 0 <= slot < SHOP_SLOTS or (b.cx - SHOP_X0) - slot * SHOP_STEP > SHOP_W:
-            continue
-        card = cards.setdefault(slot, ShopCard(slot=slot, operator=""))
-        if b.cy >= SHOP_NAME_Y:
-            card.operator = b.text.strip()
-        elif not b.text.strip().isdigit():
-            card.tags.append(normalize_tag(b.text))
-    return [c for _, c in sorted(cards.items()) if c.operator]
+        if 0 <= slot < SHOP_SLOTS and (b.cx - SHOP_X0) - slot * SHOP_STEP <= SHOP_W:
+            cards[slot] = ShopCard(slot=slot, operator=b.text.strip())
+    return [c for _, c in sorted(cards.items())]
 
 
-def detect_strategy(boxes: list[TextBox], known: Iterable[str]) -> str | None:
-    """화면에 표시된 전략 이름 중 프리셋에 등록된 것을 찾는다(선택/상세 표시 시)."""
-    texts = [b.text for b in boxes]
-    for name in known:
-        if any(name in t for t in texts):
-            return name
-    return None
+def detect_strategy(boxes: list[TextBox]) -> str | None:
+    """선택 화면 오른쪽 상세 패널에서 '初始生命值' 바로 아래 줄 = 전략(리더) 이름."""
+    anchor = next((b for b in boxes if "初始生命值" in b.text), None)
+    if not anchor:
+        return None
+    cands = [b for b in boxes if b.x > STRATEGY_PANEL_X and 0.02 < b.cy - anchor.cy < 0.12
+             and not b.text.startswith(("【", "[")) and not b.text.strip().isdigit()]
+    return min(cands, key=lambda b: b.cy).text.strip() if cands else None
 
 
-def update_state(state: GameState, boxes: list[TextBox], frame: np.ndarray | None,
-                 known_strategies: Iterable[str]) -> GameState:
+def update_state(state: GameState, boxes: list[TextBox], frame: np.ndarray | None) -> GameState:
     screen = classify_screen(boxes)
     state.screen = screen
     if screen is Screen.MATCH_INFO:
         state.match = parse_match_info(boxes, frame)
         state.strategy = None  # 새 게임 시작
     elif screen is Screen.STRATEGY_SELECT:
-        found = detect_strategy(boxes, known_strategies)
+        found = detect_strategy(boxes)  # 화면을 떠나기 전 마지막 값 = 확정 전략
         if found:
             state.strategy = found
     elif screen is Screen.BATTLE:

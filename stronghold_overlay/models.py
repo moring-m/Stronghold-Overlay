@@ -42,7 +42,6 @@ class MatchInfo:
 class ShopCard:
     slot: int
     operator: str
-    tags: list[str] = field(default_factory=list)
 
 
 @dataclass

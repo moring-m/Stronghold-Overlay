@@ -31,12 +31,23 @@ class Worker(QObject):
     def run(self) -> None:
         from .ocr import Ocr
         ocr, cap = Ocr(), Capturer()
+        tick = 0
         while not self._stop:
+            tick += 1
             rect = find_window(self.settings.window_title)
             if rect and rect[2] > 100:
                 frame = cap.grab(rect)
+                # 5회에 1번은 전체 화면으로 다시 판별 (상점 화면을 벗어났는지 확인)
+                if self.state.screen is Screen.BATTLE and tick % 5:
+                    # 상점 단계: 이름 칸만 빠르게 읽고, 이름이 안 보이면 전체 화면 판별로 복귀
+                    shop = ocr.read_shop(frame)
+                    if shop:
+                        self.state.shop = shop
+                        self.updated.emit(self.state, rect)
+                        time.sleep(self.settings.interval_ms / 1000)
+                        continue
                 boxes = ocr.read(frame)
-                update_state(self.state, boxes, frame, self.settings.presets.keys())
+                update_state(self.state, boxes, frame)
                 self.updated.emit(self.state, rect)
             time.sleep(self.settings.interval_ms / 1000)
 
@@ -71,20 +82,17 @@ class Overlay(QWidget):
         ops, alliances, note = self.settings.preferred(self.strategy)
         s = self.state
 
-        # 상점 단계: 선호 오퍼레이터/맹약 카드 강조
+        # 상점 단계: 선호 오퍼레이터 카드에 노란 테두리
         if s.screen is Screen.BATTLE:
+            p.setPen(QPen(QColor(255, 210, 0), 4))
             for c in s.shop:
-                hit_op = c.operator in ops
-                hit_al = any(t in alliances for t in c.tags)
-                if not (hit_op or hit_al):
-                    continue
-                color = QColor(80, 255, 120) if hit_op else QColor(255, 200, 60)
-                p.setPen(QPen(color, 4))
-                x = int((SHOP_X0 + c.slot * SHOP_STEP) * w)
-                p.drawRect(x, int(SHOP_Y_TOP * h), int(SHOP_W * w), int((0.99 - SHOP_Y_TOP) * h))
+                if c.operator in ops:
+                    x = int((SHOP_X0 + c.slot * SHOP_STEP) * w)
+                    p.drawRect(x, int(SHOP_Y_TOP * h), int(SHOP_W * w), int((0.99 - SHOP_Y_TOP) * h))
 
         # 정보 패널
-        lines = [f"전략: {self.strategy or '-'}"]
+        lines = [f"전략: {self.strategy or '-'}" + ("" if self.strategy in self.settings.presets or not self.strategy
+                                                  else " (프리셋 없음)")]
         if note:
             lines.append(f"  {note}")
         m = s.match

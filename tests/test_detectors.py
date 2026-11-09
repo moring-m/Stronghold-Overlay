@@ -35,4 +35,10 @@ def test_shop():
              tb("忍冬", 760, 712), tb("Sharp", 630, 712)]
     shop = parse_shop(boxes)
     assert [(c.slot, c.operator) for c in shop] == [(2, "Sharp"), (3, "忍冬")]
-    assert shop[1].tags == ["叙拉古", "迅捷"]
+
+
+def test_strategy_name():
+    from stronghold_overlay.detectors import detect_strategy
+    boxes = [tb("泛用型策略", 450, 125, 100), tb("初始生命值", 1140, 343, 100),
+             tb("25", 1245, 343, 20), tb("阿米娅", 1080, 390, 60), tb("【众志合一】", 1075, 445, 100)]
+    assert detect_strategy(boxes) == "阿米娅"
