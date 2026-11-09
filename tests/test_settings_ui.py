@@ -58,34 +58,67 @@ def test_filters(panel):
     assert ops.empty.isVisibleTo(ops)
 
 
-def test_preset_management(panel, monkeypatch):
-    from stronghold_overlay.settings_ui import QInputDialog, QMessageBox
-    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("아미야 덱", True)))
-    panel._preset_new()
+def test_preset_management(panel):
+    panel._preset_new()                                                 # 대화상자 없이 바로 생성
     p = panel._cur_preset()
-    assert p.name == "아미야 덱"
-    panel._preset_link(panel.p_strat_add.findData("阿米娅"))            # 전략 연결
+    assert p.name == "프리셋 1" and panel.p_name.text() == "프리셋 1"
+    panel.p_name.setText("아미야 덱")
+    panel.p_name.textEdited.emit("아미야 덱")                            # 이름 칸에서 바로 수정
+    assert p.name == "아미야 덱" and panel.p_list.currentItem().text().startswith("아미야 덱")
+    panel._preset_link(panel.p_strat_add.findData("阿米娅"))
     click_card(panel.p_ops, "复奏")
     click_card(panel.p_items, "歌利亚头盔")
     assert p.strategies == ["阿米娅"] and p.operators == ["复奏"] and p.equipment == ["歌利亚头盔"]
 
-    names, _, active = panel.settings.preferred("阿米娅")                 # 연결 전략이면 적용
+    names, _, active = panel.settings.preferred("阿米娅")
     assert {"复奏", "歌利亚头盔"} <= names and active == [p]
-    assert panel.settings.preferred("歌利亚")[2] == []                   # 다른 전략이면 미적용
+    assert panel.settings.preferred("歌利亚")[2] == []
 
-    panel._preset_dup()                                                  # 복제
+    panel._preset_dup()
     q = panel._cur_preset()
     assert q.id != p.id and q.operators == p.operators and "사본" in q.name
-    monkeypatch.setattr(QInputDialog, "getText", staticmethod(lambda *a, **k: ("새 이름", True)))
-    panel._preset_rename()                                               # 이름 변경
-    assert q.name == "새 이름"
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.Yes))
-    panel._preset_delete()                                               # 삭제
+
+    delete = panel.p_btns["p_delete"]
+    delete.click()                                                      # 첫 클릭은 확인 대기
+    assert q.id in panel.settings.presets and delete.text() == "한 번 더 눌러 확인"
+    delete.click()                                                      # 두 번째 클릭에 삭제
     assert q.id not in panel.settings.presets and p.id in panel.settings.presets
 
-    panel._save()                                                        # 저장 → 다시 불러오기
+    panel.p_list.setCurrentRow(0)
+    panel._preset_export()                                              # 내보내기 → 패널 안에 코드 표시
+    code = panel.code_edit.text()
+    assert code.startswith("SHP1.") and not panel.code_box.isHidden()
+    panel._preset_import()
+    panel.code_edit.setText(code)
+    panel._code_go()                                                    # 가져오기 → 새 프리셋
+    assert len(panel.settings.presets) == 2 and panel._cur_preset().operators == ["复奏"]
+    panel._preset_import()
+    panel.code_edit.setText("이상한 코드")
+    panel._code_go()
+    assert "⚠" in panel.code_msg.text() and len(panel.settings.presets) == 2
+
+    panel._save()
     loaded = config.load_settings().presets[p.id]
     assert loaded.name == "아미야 덱" and loaded.equipment == ["歌利亚头盔"]
+
+
+def test_settings_panel_follows_game_window():
+    from types import SimpleNamespace
+    from PySide6.QtCore import QPoint, QRect
+    from stronghold_overlay.app import App
+
+    class FakePanel:
+        def __init__(self):
+            self.p = QPoint(300, 200)
+        def isVisible(self): return True
+        def pos(self): return self.p
+        def width(self): return 800
+        def height(self): return 500
+        def move(self, p): self.p = p
+
+    fake = SimpleNamespace(panel=FakePanel())
+    App._follow_panel(fake, QRect(100, 100, 1353, 761), QRect(400, 250, 1353, 761))
+    assert fake.panel.p == QPoint(600, 350)                             # 게임 창과 같이 이동
 
 
 def test_preset_code_roundtrip():

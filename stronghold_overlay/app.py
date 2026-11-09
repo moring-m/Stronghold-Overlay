@@ -268,7 +268,9 @@ class App(QObject):
             self.hwnd = capture.find_window(self.settings.window_title)
         rect = capture.client_rect(self.hwnd) if self.hwnd else None
         self.worker.rect = rect
-        self.game = to_logical(rect) if rect else None
+        game = to_logical(rect) if rect else None
+        self._follow_panel(self.game, game)
+        self.game = game
         visible = bool(self.game) and self.enabled and capture.is_foreground(self.hwnd)
         if visible:
             if self.overlay.geometry() != self.game:
@@ -283,6 +285,16 @@ class App(QObject):
             self.gear.hide()
             self.toast.hide()
         self._update_tooltip()
+
+    def _follow_panel(self, old: QRect | None, new: QRect | None) -> None:
+        """설정 창이 게임 창을 따라 움직이게 (게임 창 기준 상대 위치 유지)."""
+        if not (self.panel and self.panel.isVisible() and old and new) or old == new:
+            return
+        pos = self.panel.pos() - old.topLeft() + new.topLeft()
+        # 게임 창 크기가 바뀌어도 패널이 게임 창 밖으로 크게 벗어나지 않게
+        pos.setX(max(new.left(), min(pos.x(), new.right() - self.panel.width())))
+        pos.setY(max(new.top(), min(pos.y(), new.bottom() - self.panel.height())))
+        self.panel.move(pos)
 
     # ---- 인식 결과 ----
     def on_state(self, state: GameState) -> None:

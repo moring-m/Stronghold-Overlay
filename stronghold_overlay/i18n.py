@@ -122,6 +122,10 @@ _S: dict[str, dict[str, str]] = {
     "p_import_bad": {"ko": "올바른 프리셋 코드가 아닙니다.", "en": "That is not a valid preset code.", "zh": "不是有效的预设代码。"},
     "p_auto": {"ko": "(전략 연결로 자동)", "en": "(auto by linked strategy)", "zh": "（按关联策略自动）"},
     "p_active": {"ko": "항상 쓸 프리셋", "en": "Always-on preset", "zh": "常驻预设"},
+    "confirm_again": {"ko": "한 번 더 눌러 확인", "en": "Click again to confirm", "zh": "再按一次确认"},
+    "p_import_go": {"ko": "가져오기", "en": "Import", "zh": "导入"},
+    "close": {"ko": "닫기", "en": "Close", "zh": "关闭"},
+    "only_checked_short": {"ko": "선택만", "en": "Selected", "zh": "仅已选"},
     "gear_tip": {"ko": "오버레이 설정", "en": "Overlay settings", "zh": "悬浮窗设置"},
 }
 

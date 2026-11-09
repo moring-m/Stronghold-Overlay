@@ -6,14 +6,14 @@ import copy
 from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (QButtonGroup, QCheckBox, QComboBox, QFormLayout, QFrame, QGridLayout,
-                               QHBoxLayout, QInputDialog, QLabel, QLineEdit, QListWidget, QListWidgetItem,
-                               QMessageBox, QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget)
+                               QHBoxLayout, QLabel, QLineEdit, QListWidget, QListWidgetItem,
+                               QPushButton, QSlider, QStackedWidget, QVBoxLayout, QWidget)
 
 from . import autostart, config, theme
 from .config import Preset, new_id
 from .gamedata import GameData
 from .i18n import LANGUAGES, tr
-from .pickers import AlliancePicker, CardPicker
+from .pickers import AlliancePicker, CardPicker, ConfirmButton
 
 
 def rule() -> QFrame:
@@ -80,7 +80,9 @@ class SettingsPanel(QWidget):
         p = QPainter(self)
         bg = QColor(theme.PAGE)
         bg.setAlpha(int(255 * self.settings.panel_opacity / 100))
+        p.setCompositionMode(QPainter.CompositionMode_Source)   # 이전 프레임을 지우고 다시 칠함 (잔상 방지)
         p.fillRect(self.rect(), bg)
+        p.setCompositionMode(QPainter.CompositionMode_SourceOver)
         p.setPen(QPen(QColor(theme.RULE), 1))
         p.drawRect(self.rect().adjusted(0, 0, -1, -1))
 
@@ -136,26 +138,61 @@ class SettingsPanel(QWidget):
         grid = QGridLayout()
         grid.setSpacing(4)
         self.p_btns = {}
-        for i, (key, fn) in enumerate((("p_new", self._preset_new), ("p_save", self._preset_save),
-                                       ("p_dup", self._preset_dup), ("p_rename", self._preset_rename),
-                                       ("p_delete", self._preset_delete), ("p_export", self._preset_export),
-                                       ("p_import", self._preset_import))):
+        specs = (("p_new", self._preset_new), ("p_dup", self._preset_dup),
+                 ("p_save", self._preset_save), ("p_rename", self._preset_rename),
+                 ("p_export", self._preset_export), ("p_import", self._preset_import))
+        for i, (key, fn) in enumerate(specs):
             b = QPushButton(tr(key))
             b.clicked.connect(fn)
             grid.addWidget(b, i // 2, i % 2)
             self.p_btns[key] = b
+        delete = ConfirmButton(tr("p_delete"))
+        delete.confirmed.connect(self._preset_delete)
+        grid.addWidget(delete, 3, 0, 1, 2)
+        self.p_btns["p_delete"] = delete
         left.addLayout(grid)
+
+        # 코드 내보내기/가져오기 줄 (대화상자 대신 패널 안에서)
+        self.code_box = QWidget(objectName="CodeBox")
+        cb = QVBoxLayout(self.code_box)
+        cb.setContentsMargins(0, 4, 0, 0)
+        self.code_msg = QLabel(objectName="Hint")
+        self.code_msg.setWordWrap(True)
+        self.code_edit = QLineEdit()
+        self.code_edit.setPlaceholderText(tr("p_import_label"))
+        self.code_edit.returnPressed.connect(self._code_go)
+        row = QHBoxLayout()
+        self.code_go = QPushButton(tr("p_import_go"), objectName="Primary")
+        self.code_go.clicked.connect(self._code_go)
+        close = QPushButton(tr("close"))
+        close.clicked.connect(lambda: self.code_box.hide())
+        row.addWidget(self.code_go)
+        row.addWidget(close)
+        cb.addWidget(self.code_msg)
+        cb.addWidget(self.code_edit)
+        cb.addLayout(row)
+        self.code_box.hide()
+        left.addWidget(self.code_box)
         body.addLayout(left)
 
         # 오른쪽: 선택한 프리셋 편집
         self.p_editor = QWidget()
         ed = QVBoxLayout(self.p_editor)
         ed.setContentsMargins(8, 0, 0, 0)
+        nrow = QHBoxLayout()
+        nrow.addWidget(QLabel(tr("p_name")))
+        self.p_name = QLineEdit()
+        self.p_name.setMaxLength(40)
+        self.p_name.textEdited.connect(self._preset_renamed)
+        nrow.addWidget(self.p_name, 1)
+        ed.addLayout(nrow)
         srow = QHBoxLayout()
         srow.addWidget(QLabel(tr("p_strategies")))
         self.p_strat_add = QComboBox()
         self.p_strat_add.setEditable(True)
         self.p_strat_add.setInsertPolicy(QComboBox.NoInsert)
+        self.p_strat_add.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.p_strat_add.setMinimumContentsLength(12)
         self.p_strat_add.lineEdit().setPlaceholderText(tr("strategy_search"))
         self.p_strat_add.addItem("", None)
         for st in self.gd.raw["strategies"]:
@@ -183,8 +220,8 @@ class SettingsPanel(QWidget):
         tabs.addWidget(self.p_note, 2)
         ed.addLayout(tabs)
         self.p_stack = QStackedWidget()
-        self.p_ops = CardPicker(self.gd, "operator")
-        self.p_items = CardPicker(self.gd, "equipment")
+        self.p_ops = CardPicker(self.gd, "operator", compact=True)
+        self.p_items = CardPicker(self.gd, "equipment", compact=True)
         self.p_als = AlliancePicker(self.gd)
         for wdg in (self.p_ops, self.p_items, self.p_als):
             self.p_stack.addWidget(wdg)
@@ -193,6 +230,7 @@ class SettingsPanel(QWidget):
         ed.addWidget(self.p_stack, 1)
         body.addWidget(self.p_editor, 1)
         self.p_empty = QLabel(tr("p_empty"), objectName="Muted", alignment=Qt.AlignCenter)
+        self.p_empty.setWordWrap(True)
         body.addWidget(self.p_empty, 1)
 
         self._loading = False
@@ -212,8 +250,7 @@ class SettingsPanel(QWidget):
         self.p_list.blockSignals(True)
         self.p_list.clear()
         for p in self.settings.presets.values():
-            n = len(p.operators) + len(p.equipment)
-            it = QListWidgetItem(f"{p.name}\n{tr('p_summary', n=n, s=len(p.strategies))}")
+            it = QListWidgetItem(self._list_text(p))
             it.setData(Qt.UserRole, p.id)
             self.p_list.addItem(it)
             if p.id == cur:
@@ -225,9 +262,14 @@ class SettingsPanel(QWidget):
 
     def _preset_load(self, *_):
         p = self._cur_preset()
-        self.p_editor.setVisible(p is not None)
-        self.p_empty.setVisible(p is None)
-        for k in ("p_dup", "p_rename", "p_delete", "p_export", "p_save"):
+        # 숨길 것을 먼저 숨긴다 (둘이 잠깐 같이 보이면 창이 그 폭만큼 커짐)
+        if p is None:
+            self.p_editor.hide()
+            self.p_empty.show()
+        else:
+            self.p_empty.hide()
+            self.p_editor.show()
+        for k in ("p_dup", "p_rename", "p_delete", "p_export"):
             self.p_btns[k].setEnabled(p is not None)
         if not p:
             return
@@ -236,6 +278,7 @@ class SettingsPanel(QWidget):
         self.p_items.set_checked(p.equipment)
         self.p_als.set_checked(p.alliances)
         self.p_note.setText(p.note)
+        self.p_name.setText(p.name)
         self._preset_chips(p)
         self._loading = False
 
@@ -261,8 +304,7 @@ class SettingsPanel(QWidget):
             return
         p.operators, p.equipment = self.p_ops.checked(), self.p_items.checked()
         p.alliances, p.note = self.p_als.checked(), self.p_note.text().strip()
-        it = self.p_list.currentItem()
-        it.setText(f"{p.name}\n{tr('p_summary', n=len(p.operators) + len(p.equipment), s=len(p.strategies))}")
+        self.p_list.currentItem().setText(self._list_text(p))
         self._changed()
 
     def _preset_link(self, idx: int) -> None:
@@ -281,10 +323,8 @@ class SettingsPanel(QWidget):
             self._preset_refresh(p.id)
             self._changed()
 
-    def _ask_name(self, title: str, default: str) -> str | None:
-        name, ok = QInputDialog.getText(self, title, tr("p_name"), text=default)
-        name = name.strip()[:40]
-        return name if ok and name else None
+    def _list_text(self, p: Preset) -> str:
+        return f"{p.name}\n{tr('p_summary', n=len(p.operators) + len(p.equipment), s=len(p.strategies))}"
 
     def _add_preset(self, p: Preset) -> None:
         self.settings.presets[p.id] = p
@@ -292,12 +332,28 @@ class SettingsPanel(QWidget):
         self._changed()
 
     def _preset_new(self) -> None:
-        name = self._ask_name(tr("p_new"), tr("p_default_name", n=len(self.settings.presets) + 1))
-        if name:
-            self._add_preset(Preset(id=new_id(), name=name))
+        """기본 이름으로 바로 만들고, 이름 칸을 선택해 바로 고칠 수 있게."""
+        n = len(self.settings.presets) + 1
+        names = {p.name for p in self.settings.presets.values()}
+        while tr("p_default_name", n=n) in names:
+            n += 1
+        self._add_preset(Preset(id=new_id(), name=tr("p_default_name", n=n)))
+        self._preset_rename()
+
+    def _preset_rename(self) -> None:
+        if self._cur_preset():
+            self.p_name.setFocus()
+            self.p_name.selectAll()
+
+    def _preset_renamed(self, text: str) -> None:
+        p = self._cur_preset()
+        if p and text.strip():
+            p.name = text.strip()
+            self.p_list.currentItem().setText(self._list_text(p))
+            self._changed()
 
     def _preset_save(self) -> None:
-        self._save()   # 자동 저장되지만 명시적으로도 저장
+        self._save()   # 자동 저장되지만 눌러서도 저장
 
     def _preset_dup(self) -> None:
         p = self._cur_preset()
@@ -306,17 +362,9 @@ class SettingsPanel(QWidget):
             q.id, q.name = new_id(), tr("p_copy_name", n=p.name)[:40]
             self._add_preset(q)
 
-    def _preset_rename(self) -> None:
-        p = self._cur_preset()
-        name = p and self._ask_name(tr("p_rename"), p.name)
-        if name:
-            p.name = name
-            self._preset_refresh(p.id)
-            self._changed()
-
     def _preset_delete(self) -> None:
         p = self._cur_preset()
-        if p and QMessageBox.question(self, tr("p_delete"), tr("p_delete_confirm", n=p.name)) == QMessageBox.Yes:
+        if p:
             del self.settings.presets[p.id]
             if self.settings.active_preset == p.id:
                 self.settings.active_preset = None
@@ -329,27 +377,38 @@ class SettingsPanel(QWidget):
             return
         code = config.export_code(p)
         QGuiApplication.clipboard().setText(code)
-        box = QInputDialog(self)
-        box.setWindowTitle(tr("p_export"))
-        box.setLabelText(tr("p_export_done"))
-        box.setTextValue(code)
-        box.setOption(QInputDialog.NoButtons, False)
-        box.exec()
+        self._code_mode = "export"
+        self.code_msg.setText(tr("p_export_done"))
+        self.code_edit.setReadOnly(True)
+        self.code_edit.setText(code)
+        self.code_go.hide()
+        self.code_box.show()
+        self.code_edit.setFocus()
+        self.code_edit.selectAll()
 
     def _preset_import(self) -> None:
-        text, ok = QInputDialog.getText(self, tr("p_import"), tr("p_import_label"),
-                                        text=QGuiApplication.clipboard().text().strip()[:4000])
-        if not ok or not text.strip():
+        self._code_mode = "import"
+        self.code_msg.setText(tr("p_import_label"))
+        self.code_edit.setReadOnly(False)
+        clip = QGuiApplication.clipboard().text().strip()
+        self.code_edit.setText(clip if clip.startswith(config.CODE_PREFIX) else "")
+        self.code_go.show()
+        self.code_box.show()
+        self.code_edit.setFocus()
+
+    def _code_go(self) -> None:
+        if getattr(self, "_code_mode", "") != "import":
             return
         valid = {"operators": set(self.gd.operators) | self.gd.prototypes, "equipment": set(self.gd.equipment),
                  "alliances": set(self.gd.alliances),
                  "strategies": {st["leader"] for st in self.gd.raw["strategies"]}}
         try:
-            p = config.import_code(text, valid)
+            p = config.import_code(self.code_edit.text(), valid)
         except ValueError:
-            QMessageBox.warning(self, tr("p_import"), tr("p_import_bad"))
+            self.code_msg.setText("⚠ " + tr("p_import_bad"))
             return
         self._add_preset(p)
+        self.code_box.hide()
 
     def _page_general(self, current_manual: str | None) -> QWidget:
         w, lay = self._page("")
@@ -364,6 +423,7 @@ class SettingsPanel(QWidget):
         f.addRow(tr("language"), self.lang)
 
         self.manual = QComboBox()
+        self.manual.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.manual.addItem(tr("auto_detect"), None)
         for s in self.gd.raw["strategies"]:
             t = self.gd.strategy_label(s)

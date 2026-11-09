@@ -4,10 +4,10 @@
 """
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (QButtonGroup, QComboBox, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
-                               QListView, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
+                               QListView, QListWidget, QListWidgetItem, QPushButton,
                                QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from . import theme
@@ -45,6 +45,37 @@ def icon(path, size: int) -> QPixmap | None:
     if key not in _ICONS:
         _ICONS[key] = load_pixmap(path, size)
     return _ICONS[key]
+
+
+class ConfirmButton(QPushButton):
+    """대화상자 없이 확인: 처음 누르면 '한 번 더 눌러 확인'으로 바뀌고, 3초 안에 다시 누르면 confirmed."""
+    confirmed = Signal()
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        self._text = text
+        self._armed = False
+        self._timer = QTimer(self, singleShot=True, interval=3000, timeout=self._reset)
+        self.clicked.connect(self._click)
+
+    def _click(self) -> None:
+        if self._armed:
+            self._reset()
+            self.confirmed.emit()
+        else:
+            self._armed = True
+            self.setText(tr("confirm_again"))
+            self.setObjectName("Danger")
+            self.style().unpolish(self)
+            self.style().polish(self)
+            self._timer.start()
+
+    def _reset(self) -> None:
+        self._armed = False
+        self.setText(self._text)
+        self.setObjectName("")
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 class CardDelegate(QStyledItemDelegate):
@@ -180,7 +211,8 @@ class CardPicker(QWidget):
     """카드 그리드 + 검색 + 필터.  kind: 'operator' | 'equipment'"""
     changed = Signal(list)
 
-    def __init__(self, gd: GameData, kind: str = "operator") -> None:
+    def __init__(self, gd: GameData, kind: str = "operator", compact: bool = False) -> None:
+        """compact: 좁은 곳(프리셋 편집)용 — 필터를 두 줄로."""
         super().__init__()
         self.gd, self.kind = gd, kind
         is_op = kind == "operator"
@@ -190,7 +222,8 @@ class CardPicker(QWidget):
 
         self.search = QLineEdit(placeholderText=tr("search_ops" if is_op else "search_items"))
         self.search.setClearButtonEnabled(True)
-        self.only = QPushButton(tr("only_checked"), checkable=True)
+        self.only = QPushButton(tr("only_checked_short"), checkable=True)
+        self.only.setToolTip(tr("only_checked"))
         self.count = QLabel(objectName="Counter")   # 페이지 머리 오른쪽에 붙임
         lay.addWidget(self.search)
 
@@ -228,8 +261,13 @@ class CardPicker(QWidget):
         lay.addWidget(self.empty)
 
         bar = QWidget(objectName="FilterBar")
-        bl = QHBoxLayout(bar)
-        bl.setContentsMargins(10, 8, 10, 8)
+        bar_rows = QVBoxLayout(bar)
+        bar_rows.setContentsMargins(10, 8, 10, 8)
+        bar_rows.setSpacing(6)
+        bl = QHBoxLayout()
+        bar_rows.addLayout(bl)
+        row2 = QHBoxLayout() if compact else bl
+        bl.setSpacing(4)
         bl.addWidget(QLabel(tr("tier")))
         self.tier_group = QButtonGroup(self)
         for i, label in enumerate([*"123456", tr("all")]):
@@ -246,32 +284,39 @@ class CardPicker(QWidget):
         self.tier_group.button(6).setChecked(True)
         self.core = self.extra = None
         if is_op:
-            bl.addSpacing(12)
+            if compact:
+                bl.addStretch(1)
+                bar_rows.addLayout(row2)
+            else:
+                bl.addSpacing(6)
             self.core = self._alliance_combo("core")
             self.extra = self._alliance_combo("extra")
-            bl.addWidget(QLabel(tr("core")))
-            bl.addWidget(self.core, 1)
-            bl.addWidget(QLabel(tr("extra")))
-            bl.addWidget(self.extra, 1)
+            row2.addWidget(QLabel(tr("core")))
+            row2.addWidget(self.core, 1)
+            row2.addWidget(QLabel(tr("extra")))
+            row2.addWidget(self.extra, 1)
             self.core.currentIndexChanged.connect(self._filter)
             self.extra.currentIndexChanged.connect(self._filter)
         else:
             bl.addStretch(1)
-        bl.addSpacing(8)
-        bl.addWidget(self.only)
-        self.clear_btn = QPushButton(tr("clear"))
-        bl.addWidget(self.clear_btn)
+        row2.addSpacing(8)
+        row2.addWidget(self.only)
+        self.clear_btn = ConfirmButton(tr("clear"))
+        row2.addWidget(self.clear_btn)
         lay.addWidget(bar)
 
         self.list.itemClicked.connect(self._toggle)
         self.search.textChanged.connect(self._filter)
         self.only.toggled.connect(self._filter)
         self.tier_group.idClicked.connect(self._filter)
-        self.clear_btn.clicked.connect(self._clear)
+        self.clear_btn.confirmed.connect(self._clear)
         self._update_count()
 
     def _alliance_combo(self, kind: str) -> QComboBox:
         c = QComboBox()
+        # 좁은 화면(프리셋 편집 등)에서도 줄어들 수 있게
+        c.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        c.setMinimumContentsLength(5)
         c.addItem(tr("all_" + kind), None)
         for zh, a in self.gd.alliances.items():
             if a["type"] == kind:
@@ -333,7 +378,7 @@ class CardPicker(QWidget):
                            f"&nbsp;/ {self.list.count()} {tr('selected')}</span>")
 
     def _clear(self):
-        if self.checked() and QMessageBox.question(self, tr("clear"), tr("clear_confirm")) == QMessageBox.Yes:
+        if self.checked():
             self.set_checked([])
             self.changed.emit([])
 
